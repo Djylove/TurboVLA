@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="TurboVLA is a compact vision-language-action model that runs at 32 Hz with 0.9 GB inference VRAM on an RTX 4090."
+    />
+    <meta property="og:title" content="TurboVLA" />
+    <meta
+      property="og:description"
+      content="Real-time vision-language-action at 32 Hz with less than 1 GB inference VRAM."
+    />
+    <meta property="og:image" content="assets/images/deployment-comparison.png" />
+    <meta name="theme-color" content="#f2f4f1" />
+    <title>TurboVLA</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script defer src="script.js"></script>
+    <script defer src="video-gallery.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="TurboVLA home">
+        <span>TurboVLA</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-label="Open navigation" aria-expanded="false" title="Menu">
+        <i data-lucide="menu"></i>
+      </button>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="#method">Method</a>
+        <a href="#real-world">Real World</a>
+        <a href="#rollouts">Sim Environments</a>
+        <a href="#results">Results</a>
+        <a href="#citation">Citation</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-inner">
+          <h1 id="hero-title">TurboVLA</h1>
+          <p class="hero-subtitle">
+            Real-Time Vision-Language-Action Model at 32 Hz on an RTX 4090 with &lt;1 GB VRAM
+          </p>
+          <p class="hero-summary">
+            TurboVLA enables compact local deployment and real-time language-conditioned manipulation with 0.2B
+            parameters, 0.9 GB inference VRAM and 31.2 ms policy latency.
+          </p>
+
+          <div class="hero-actions">
+            <a class="button button-primary" aria-disabled="true">
+              <i data-lucide="file-text"></i>
+              Paper
+            </a>
+            <a
+              class="button button-secondary"
+              href="https://github.com/H-EmbodVis/TurboVLA"
+              target="_blank"
+              rel="noreferrer"
+            >
+              <i data-lucide="github"></i>
+              Code
+            </a>
+            <a class="button button-secondary" href="#citation">
+              <i data-lucide="quote"></i>
+              BibTeX
+            </a>
+          </div>
+
+          <div class="authors" aria-label="Authors">
+            <span>Hengyi Xie<sup>*</sup></span>
+            <span>Chenfei Yao<sup>*</sup></span>
+            <span>Xianjin Wu</span>
+            <span>Xuanyang Xi</span>
+            <span>Yiping Tang</span>
+            <span>Di Xu</span>
+            <span>Dingkang Liang<sup>&dagger;</sup></span>
+            <span>Xiang Bai</span>
+          </div>
+          <p class="affiliations">
+            Huazhong University of Science and Technology &nbsp;&middot;&nbsp; Huawei Technologies
+            <br />
+            <small><sup>*</sup>Equal contribution &nbsp;&nbsp; <sup>&dagger;</sup>Project lead</small>
+          </p>
+        </div>
+      </section>
+
+      <section
+        class="video-showcase real-world-showcase"
+        id="real-world"
+        aria-label="Real Robot Demonstrations"
+      >
+        <div class="section-inner">
+          <div class="real-world-grid reveal" aria-label="Real-world demonstration videos">
+            <figure class="video-card real-world-card">
+              <figcaption>
+                <span>Real World</span>
+                <strong>Real-World Tasks</strong>
+              </figcaption>
+              <video
+                src="assets/videos/real-world-tasks.mp4"
+                autoplay
+                controls
+                loop
+                muted
+                playsinline
+                preload="metadata"
+                aria-label="Real-world task demonstrations"
+              ></video>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-light" id="overview">
+        <div class="section-inner">
+          <div class="section-heading reveal">
+            <h2>Abstract</h2>
+            <p>
+              Vision&ndash;language&ndash;action (VLA) models commonly adopt an LLM-centric
+              <em>V&rarr;L&rarr;A</em> pathway, where visual observations are projected into the representation space of a
+              large language model before being decoded into robot actions. Although effective, this design incurs
+              substantial computation and memory overhead at every policy invocation. In this work, we introduce
+              TurboVLA, a new VLA paradigm that reformulates the conventional <em>V&rarr;L&rarr;A</em> pathway as a direct
+              <em>V+L&rarr;A</em> mapping. Instead of using a large language model as the central interface between
+              perception and action, TurboVLA independently encodes visual observations and language instructions,
+              directly exchanges information between them through lightweight bidirectional vision-language
+              interaction, and predicts continuous action chunks with a compact decoder. This simple design constructs
+              task-conditioned representations directly from visual and linguistic features, significantly reducing the
+              computational and memory costs of VLA inference. On LIBERO, TurboVLA achieves 97.7% average success with
+              only 0.2B parameters, 31.2 ms inference latency, and 0.9 GB inference VRAM on a consumer-grade RTX 4090,
+              matching or outperforming substantially larger VLA policies. These results establish TurboVLA as a simple
+              and effective alternative to the prevailing LLM-centric VLA paradigm, offering a new perspective on how
+              vision, language, and action can be connected for efficient robotic manipulation.
+            </p>
+          </div>
+
+          <figure class="paper-figure abstract-figure reveal">
+            <img
+              src="assets/images/deployment-comparison.png"
+              alt="Comparison of LLM-centric VLA deployment and execution with TurboVLA edge deployment and real-time execution"
+              width="1538"
+              height="773"
+            />
+          </figure>
+        </div>
+      </section>
+
+      <section class="section section-paper" id="method">
+        <div class="section-inner">
+          <div class="section-heading compact reveal">
+            <h2>Method</h2>
+            <p>
+              We use DINOv3 (Sim&eacute;oni et al., 2025) as the visual backbone and BERT (Devlin et al., 2019) as the
+              lightweight instruction encoder. Visual and textual features are projected into a shared space with
+              d = 256 and processed by N = 6 bidirectional vision-language interaction layers initialized from
+              grounding-pretrained feature-enhancement weights (Liu et al., 2024b). An ACT-style transformer decoder
+              (Zhao et al., 2023) maps the resulting multimodal features and robot state to continuous action chunks.
+              Across all benchmarks, we train through behavior cloning with the &ell;<sub>1</sub> loss, using a learning
+              rate of 5 &times; 10<sup>&minus;5</sup> on four RTX 4090 GPUs. Benchmark-specific settings are described below.
+            </p>
+          </div>
+
+          <div class="method-layout">
+            <figure class="paper-figure method-figure reveal">
+              <img
+                src="assets/images/architecture-overview.png"
+                alt="TurboVLA architecture with DINOv3, BERT, bidirectional vision-language interaction, and action chunk decoder"
+                width="1950"
+                height="1182"
+              />
+            </figure>
+            <div class="method-notes reveal">
+              <div>
+                <strong>DINOv3 + BERT</strong>
+                <p>We use DINOv3 (Sim&eacute;oni et al., 2025) as the visual backbone and BERT (Devlin et al., 2019) as the lightweight instruction encoder.</p>
+              </div>
+              <div>
+                <strong>6 interaction layers</strong>
+                <p>Visual and textual features are projected into a shared space with d = 256 and processed by N = 6 bidirectional vision-language interaction layers initialized from grounding-pretrained feature-enhancement weights (Liu et al., 2024b).</p>
+              </div>
+              <div>
+                <strong>Action horizon 12</strong>
+                <p>An ACT-style transformer decoder (Zhao et al., 2023) maps the resulting multimodal features and robot state to continuous action chunks.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-results" id="results">
+        <div class="section-inner">
+          <div class="section-heading reveal">
+            <h2>Results</h2>
+            <p>
+              Tab. 1 and Tab. 2 present complementary evaluations of TurboVLA on simulation benchmarks. From these
+              results, we draw the following observations.
+            </p>
+          </div>
+
+          <div class="metrics" aria-label="Key results">
+            <div class="metrics-inner">
+              <div class="metric reveal">
+                <strong>0.2B</strong>
+                <span>parameters</span>
+              </div>
+              <div class="metric reveal">
+                <strong>31.2 ms</strong>
+                <span>policy latency</span>
+              </div>
+              <div class="metric reveal">
+                <strong>0.9 GB</strong>
+                <span>inference VRAM</span>
+              </div>
+              <div class="metric reveal">
+                <strong>97.7%</strong>
+                <span>LIBERO average</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="table-wrap reveal" tabindex="0" aria-label="Efficiency comparison table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Method</th>
+                  <th>Params (B) &darr;</th>
+                  <th>VRAM (GB) &darr;</th>
+                  <th>Latency (ms) &darr;</th>
+                  <th>LIBERO avg. &uarr;</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="ours-row">
+                  <td>TurboVLA</td>
+                  <td>0.2</td>
+                  <td>0.9</td>
+                  <td>31.2</td>
+                  <td>97.7</td>
+                </tr>
+                <tr>
+                  <td>VLA-Adapter</td>
+                  <td>1.5</td>
+                  <td>4.3</td>
+                  <td>87.3</td>
+                  <td>97.3</td>
+                </tr>
+                <tr>
+                  <td>&pi;<sub>0.5</sub></td>
+                  <td>3.4</td>
+                  <td>12.8</td>
+                  <td>93.6</td>
+                  <td>96.9</td>
+                </tr>
+                <tr>
+                  <td>OpenVLA-OFT</td>
+                  <td>7.7</td>
+                  <td>15.7</td>
+                  <td>112.2</td>
+                  <td>97.1</td>
+                </tr>
+                <tr>
+                  <td>SmolVLA</td>
+                  <td>2.3</td>
+                  <td>7.1</td>
+                  <td>203.1</td>
+                  <td>88.8</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="benchmark-split">
+            <article class="benchmark reveal">
+              <div class="benchmark-title">
+                <div>
+                  <p class="section-index">LIBERO</p>
+                  <h3>Four-suite evaluation</h3>
+                </div>
+                <strong>97.7%</strong>
+              </div>
+              <div class="score-bars">
+                <div class="score-row" style="--score: 99.2%">
+                  <span>Spatial</span><div class="score-track"><i></i></div><b>99.2</b>
+                </div>
+                <div class="score-row" style="--score: 99.8%">
+                  <span>Object</span><div class="score-track"><i></i></div><b>99.8</b>
+                </div>
+                <div class="score-row" style="--score: 97.4%">
+                  <span>Goal</span><div class="score-track"><i></i></div><b>97.4</b>
+                </div>
+                <div class="score-row" style="--score: 94.2%">
+                  <span>Long</span><div class="score-track"><i></i></div><b>94.2</b>
+                </div>
+              </div>
+            </article>
+
+            <article class="benchmark reveal">
+              <div class="benchmark-title">
+                <div>
+                  <p class="section-index">RoboTwin 2.0</p>
+                  <h3>One policy, 50 clean tasks</h3>
+                </div>
+                <strong>60.2%</strong>
+              </div>
+              <div class="comparison-bars">
+                <div style="--score: 60.2%"><span>TurboVLA</span><i></i><b>60.2</b></div>
+                <div style="--score: 57%"><span>&pi;<sub>0.5</sub></span><i></i><b>57.0</b></div>
+                <div style="--score: 50.3%"><span>StarVLA-&alpha;</span><i></i><b>50.3</b></div>
+              </div>
+              <p class="benchmark-note">0.4B parameters &middot; 43.4 ms latency &middot; multi-task training</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section simulation-showcase" id="rollouts">
+        <div class="section-inner">
+          <div class="section-heading reveal">
+            <h2>Simulated Environments</h2>
+            <p>
+              We evaluate TurboVLA across three complementary settings: single-arm manipulation on LIBERO (Liu et al.,
+              2023), bimanual manipulation on RoboTwin 2.0 (Chen et al., 2026b), and deployment on a real robotic
+              platform.
+            </p>
+          </div>
+
+          <div class="simulation-pair">
+            <article class="simulation-block reveal">
+              <div class="simulation-heading">
+                <div>
+                  <p class="section-index">LIBERO</p>
+                  <h3>Four suites</h3>
+                </div>
+                <strong>40 clips</strong>
+              </div>
+              <div class="video-grid libero-grid" data-video-group="libero" aria-label="LIBERO rollout videos"></div>
+            </article>
+
+            <article class="simulation-block reveal">
+              <div class="simulation-heading">
+                <div>
+                  <p class="section-index">RoboTwin 2.0</p>
+                  <h3>Clean50</h3>
+                </div>
+                <strong>50 clips</strong>
+              </div>
+              <div class="video-grid robotwin-grid" data-video-group="robotwin" aria-label="RoboTwin rollout videos"></div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-paper" id="citation">
+        <div class="section-inner citation-layout">
+          <div class="section-heading compact reveal">
+            <p class="section-index">05 / Citation</p>
+            <h2>Cite TurboVLA</h2>
+            <p>Please use the following citation if TurboVLA is useful in your research.</p>
+          </div>
+          <div class="bibtex-wrap reveal">
+            <button class="copy-button" type="button" title="Copy BibTeX" aria-label="Copy BibTeX" aria-live="polite">
+              <i data-lucide="copy"></i>
+              <span>Copy</span>
+            </button>
+            <pre id="bibtex"><code>@misc{xie2026turbovla,
+  title  = {TurboVLA: Real-Time Vision-Language-Action Model at
+            32 Hz on an RTX 4090 with &lt;1 GB VRAM},
+  author = {Xie, Hengyi and Yao, Chenfei and Wu, Xianjin and
+            Xi, Xuanyang and Tang, Yiping and Xu, Di and
+            Liang, Dingkang and Bai, Xiang},
+  year   = {2026}
+}</code></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>TurboVLA</span>
+      <span>Huazhong University of Science and Technology &middot; Huawei Technologies</span>
+      <span>&copy; <span id="year">2026</span></span>
+    </footer>
+  </body>
+</html>
