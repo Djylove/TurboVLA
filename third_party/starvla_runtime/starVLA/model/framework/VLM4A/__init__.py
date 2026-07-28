@@ -1,0 +1,1 @@
+"""GroundingDINO-ACT framework package."""

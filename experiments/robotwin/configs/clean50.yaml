@@ -1,0 +1,105 @@
+run_id: groundingdinoact_robotwin_clean50
+run_root_dir: results/Checkpoints
+seed: 42
+wandb_entity: your_wandb_entity
+wandb_project: groundingdinoact_robotwin
+is_debug: false
+version_id: "0.1"
+
+framework:
+  # Kept as GroundingDINODiT for compatibility with existing checkpoints.
+  name: GroundingDINODiT
+  text:
+    bert_path: ${oc.env:GROUNDINGDINO_BERT_PATH}
+    max_text_len: 256
+    sub_sentence_present: true
+    local_files_only: true
+    freeze_text_encoder: true
+    attn_implementation: flash_attention_2
+  dinov3:
+    model_path: ${oc.env:DINOV3_MODEL_PATH}
+    image_size: 224
+    num_views: 3
+    local_files_only: true
+    freeze_vision_encoder: false
+    attn_implementation: flash_attention_2
+    vision_pos_init_std: 0.01
+    vision_pos_scale_init: 0.01
+    vision_dropout: 0.1
+  fusion:
+    hidden_dim: 256
+    nheads: 8
+    dim_feedforward: 2048
+    enhancer_inner_dim: 1024
+    num_layers: 6
+    text_dropout: 0.0
+    fusion_dropout: 0.0
+    fusion_droppath: 0.1
+  groundingdino:
+    pretrained_ckpt: ${oc.env:GROUNDINGDINO_CKPT}
+    load_pretrained: true
+    load_bert: true
+    load_text_proj: true
+    load_feature_enhancer: true
+  action_model:
+    action_model_type: act
+    action_dim: 14
+    state_dim: 14
+    action_horizon: 50
+    act_hidden_dim: 256
+    act_nheads: 8
+    act_num_layers: 3
+    act_dim_feedforward: 2048
+    act_dropout: 0.1
+    act_state_tokens: 2
+    act_state_hidden_dim: 256
+    act_mlp_hidden_dim: 512
+    act_loss_type: l1
+
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets
+    include_state: true
+    data_root_dir: ${oc.env:ROBOTWIN_DATA_ROOT}
+    data_mix: robotwin_clean_50
+    action_type: abs_qpos
+    action_mode: abs
+    sequential_step_sampling: false
+    per_device_batch_size: 48
+    load_all_data_for_training: true
+    obs_image_size: [224, 224]
+    video_backend: pyav
+    num_workers: 8
+    prefetch_factor: 4
+    persistent_workers: true
+    pin_memory: true
+
+trainer:
+  use_deepspeed: true
+  max_train_steps: 100000
+  num_warmup_steps: 1000
+  save_interval: 5000
+  eval_interval: 1000
+  learning_rate:
+    base: 5.0e-05
+    text_encoder: 5.0e-05
+    dinov3: 5.0e-05
+    feature_enhancer: 5.0e-05
+    vision_proj: 5.0e-05
+    action_model: 5.0e-05
+  lr_scheduler_type: warmup_constant_with_factor
+  scheduler_specific_kwargs:
+    warmup_start_factor: 0.0
+  freeze_modules: text_encoder.bert
+  max_grad_norm: 1.0
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 1
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
+    weight_decay: 1.0e-10
+  save_format: pt
+  ema_decay: 0.999
+  ema_device: cuda
+  logging_frequency: 50
