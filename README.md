@@ -21,6 +21,15 @@ This repository contains the official implementation of **TurboVLA** for the pap
   <sub><b>Real-world tasks with synchronous policy inference.</b></sub>
 </div>
 
+
+---
+
+## 📣 News
+
+- `2026.07.30`: Released the paper, training and evaluation code.
+
+---
+
 ## 📄 Abstract
 
 Vision-language-action (VLA) models commonly adopt an LLM-centric V &rarr; L &rarr; A pathway, where visual observations are projected into the representation space of a large language model before being decoded into robot actions. Although effective, this design incurs substantial computation and memory overhead at every policy invocation.
@@ -43,11 +52,6 @@ In this work, we introduce **TurboVLA**, a new VLA paradigm that reformulates th
   </a>
 </div>
 
----
-
-## 📣 News
-
-- `2026.07.30`: Released the paper, training and evaluation code.
 
 ---
 
