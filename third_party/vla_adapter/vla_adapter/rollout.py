@@ -79,7 +79,7 @@ class GenerateConfig:
     fusion_dropout: float = 0.0
     fusion_droppath: float = 0.1
     sub_sentence_present: bool = True
-    dinov3_precision: str = "bf16_autocast"
+    precision: str = "bf16"
     dinov3_output_hidden_states: bool = True
 
 
@@ -107,6 +107,8 @@ def parse_args() -> GenerateConfig:
         if isinstance(default, bool):
             parser.add_argument(arg_name, dashed_arg_name, type=_parse_bool, nargs="?", const=True, **kwargs)
             parser.add_argument(f"--no_{name}", f"--no-{name.replace('_', '-')}", dest=name, action="store_false")
+        elif name == "precision":
+            parser.add_argument(arg_name, dashed_arg_name, type=str, choices=("bf16", "fp32"), **kwargs)
         elif isinstance(default, int):
             parser.add_argument(arg_name, dashed_arg_name, type=int, **kwargs)
         elif isinstance(default, float):
@@ -313,7 +315,7 @@ def eval_libero(cfg: GenerateConfig) -> float:
         fusion_dropout=cfg.fusion_dropout,
         fusion_droppath=cfg.fusion_droppath,
         sub_sentence_present=cfg.sub_sentence_present,
-        dinov3_precision=cfg.dinov3_precision,
+        precision=cfg.precision,
         dinov3_output_hidden_states=cfg.dinov3_output_hidden_states,
     )
 
@@ -335,7 +337,7 @@ def eval_libero(cfg: GenerateConfig) -> float:
         "num_trials_per_task": cfg.num_trials_per_task,
         "num_open_loop_steps": cfg.num_open_loop_steps,
         "seed": cfg.seed,
-        "dinov3_precision": cfg.dinov3_precision,
+        "precision": cfg.precision,
         "dinov3_output_hidden_states": cfg.dinov3_output_hidden_states,
         "tasks": [],
         "total_episodes": 0,

@@ -340,7 +340,7 @@ class TurboVLAPolicy:
         fusion_dropout: float = 0.0,
         fusion_droppath: float = 0.1,
         sub_sentence_present: bool = True,
-        dinov3_precision: str = "fp32",
+        precision: str = "bf16",
         dinov3_output_hidden_states: bool = True,
         verbose: bool = True,
     ) -> None:
@@ -352,14 +352,12 @@ class TurboVLAPolicy:
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.chunk_size = int(chunk_size)
         self.action_dim = int(action_dim)
-        self.dinov3_precision = str(dinov3_precision).lower()
+        self.precision = str(precision).lower()
+        self.model_dtype = torch.bfloat16 if self.precision == "bf16" else torch.float32
         self.dinov3_output_hidden_states = bool(dinov3_output_hidden_states)
         self.verbose = bool(verbose)
-        if self.dinov3_precision not in {"fp32", "bf16", "bf16_autocast"}:
-            raise ValueError(
-                f"Unsupported dinov3_precision={dinov3_precision!r}; "
-                "expected 'fp32', 'bf16', or 'bf16_autocast'."
-            )
+        if self.precision not in {"bf16", "fp32"}:
+            raise ValueError(f"Unsupported precision={precision!r}; expected 'bf16' or 'fp32'.")
 
         if not self.dinov3_path:
             raise ValueError("dinov3_path must point to a local DINOv3 checkpoint or a HF model id")
@@ -375,7 +373,7 @@ class TurboVLAPolicy:
             print(f"[TurboVLAPolicy] model source: {loaded_model_path}", flush=True)
             print(
                 "[TurboVLAPolicy] "
-                f"dinov3_precision={self.dinov3_precision}, "
+                f"precision={self.precision}, "
                 f"dinov3_output_hidden_states={self.dinov3_output_hidden_states}",
                 flush=True,
             )
@@ -400,24 +398,44 @@ class TurboVLAPolicy:
         )
         self.model = build_turbovla_eval(model_args)
         self._patch_dinov3_eval_forward()
-        self._set_dinov3_precision()
         self._load_checkpoint()
+        self._set_eval_precision()
         self.model.to(self.device)
         self.model.eval()
         self.model.requires_grad_(False)
+        self._verify_model_precision()
         self.dinov3_processor = build_dinov3_manual_processor(self.dinov3_path)
 
-    def _set_dinov3_precision(self) -> None:
-        if self.dinov3_precision == "bf16":
-            self.model.dinov3.to(dtype=torch.bfloat16)
+    def _set_eval_precision(self) -> None:
+        if self.precision == "bf16":
+            self.model.to(dtype=torch.bfloat16)
         else:
-            # bf16_autocast keeps DINOv3 parameters in fp32 and only autocasts
-            # the forward pass, matching the fp32param_bf16compute trainer.
-            self.model.dinov3.float()
+            # FP32 evaluation keeps all parameters FP32 while autocasting only
+            # the DINOv3 forward pass to BF16.
+            self.model.float()
+
+    def _verify_model_precision(self) -> None:
+        floating_dtypes = {
+            param.dtype
+            for param in self.model.parameters()
+            if param.is_floating_point()
+        }
+        expected = {self.model_dtype}
+        if floating_dtypes != expected:
+            raise RuntimeError(
+                f"precision={self.precision} expected model parameter dtypes {expected}, "
+                f"got {floating_dtypes}"
+            )
+        if self.verbose:
+            dtype_name = str(self.model_dtype).removeprefix("torch.")
+            print(
+                f"[TurboVLAPolicy] precision={self.precision}, model_parameter_dtype={dtype_name}",
+                flush=True,
+            )
 
     def _patch_dinov3_eval_forward(self) -> None:
         output_hidden_states = self.dinov3_output_hidden_states
-        dinov3_precision = self.dinov3_precision
+        precision = self.precision
 
         def _encode_one_view(model_self, dino_pixel_values, view_idx):
             dino_patch = model_self._get_patch_size(model_self.dinov3.config)
@@ -429,11 +447,11 @@ class TurboVLAPolicy:
                 )
 
             dino_expected_n = (dino_h // dino_patch) * (dino_w // dino_patch)
-            if dinov3_precision == "bf16":
+            if precision == "bf16":
                 dino_pixel_values = dino_pixel_values.to(dtype=torch.bfloat16)
 
             dino_compute_context = nullcontext()
-            if dinov3_precision == "bf16_autocast" and dino_pixel_values.device.type == "cuda":
+            if precision == "fp32" and dino_pixel_values.device.type == "cuda":
                 dino_compute_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
 
             if model_self.freeze_vision_encoder:
@@ -456,7 +474,7 @@ class TurboVLAPolicy:
                 "DINOv3",
                 allowed_prefix_tokens=(model_self.dinov3_prefix_tokens,),
             )
-            if dinov3_precision in {"bf16", "bf16_autocast"}:
+            if precision == "fp32":
                 dino_tokens = dino_tokens.float()
             dino_tokens = model_self.vision_proj(dino_tokens)
             return model_self._add_view_embed(dino_tokens, view_idx=view_idx)
@@ -515,6 +533,17 @@ class TurboVLAPolicy:
         state_tensors = torch.stack([normalize_state(state) for state in states], dim=0).to(self.device)
         return samples, state_tensors
 
+    def _prepare_model_inputs(
+        self,
+        samples: dict[str, torch.Tensor],
+        states: torch.Tensor,
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+        samples = {
+            key: value.to(dtype=self.model_dtype) if value.is_floating_point() else value
+            for key, value in samples.items()
+        }
+        return samples, states.to(dtype=self.model_dtype)
+
     def predict_normalized_action_chunk(
         self,
         primary_image: np.ndarray,
@@ -528,9 +557,14 @@ class TurboVLAPolicy:
             state = np.asarray(state_or_obs, dtype=np.float32)
 
         samples, states = self._build_batch([primary_image], [wrist_image], [state])
+        samples, states = self._prepare_model_inputs(samples, states)
         with torch.inference_mode():
             pred = self.model([instruction], samples, states)
-        return sanitize_pred_chunk(pred.detach().cpu().numpy()[0])
+        if pred.dtype != self.model_dtype:
+            raise RuntimeError(
+                f"precision={self.precision} expected forward output dtype {self.model_dtype}, got {pred.dtype}"
+            )
+        return sanitize_pred_chunk(pred.detach().float().cpu().numpy()[0])
 
     def predict_env_action_chunk(
         self,

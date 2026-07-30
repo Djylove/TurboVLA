@@ -78,14 +78,14 @@ python experiments/libero/evaluate.py \
   --num_trials_per_task 50 \
   --chunk_size 12 \
   --num_open_loop_steps 12 \
-  --dinov3_precision bf16_autocast \
+  --precision bf16 \
   --result_json_path outputs/evaluation/object.json
 ```
+
 
 Use `--dry_run_model_load true` to validate checkpoint compatibility without a
 simulator rollout. Report whether results use one shared checkpoint or a
 separately selected checkpoint per suite.
 
-The rollout protocol is derived from VLA-Adapter revision
-`23fa0c9c159e2aa04341cdd3e924f44061311060`. See
+The rollout protocol is derived from [VLA-Adapter](https://github.com/OpenHelix-Team/VLA-Adapter/commit/23fa0c9c159e2aa04341cdd3e924f44061311060). See
 `third_party/licenses/VLA-Adapter.txt` for the retained license and attribution.

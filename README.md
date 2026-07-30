@@ -1,14 +1,12 @@
 # TurboVLA: Real-Time Vision-Language-Action Model at 32 Hz on an RTX 4090 with &lt;1 GB VRAM
 
 <div align="center">
-  <a><img src="https://img.shields.io/badge/Paper-PDF-b31b1b?logo=adobeacrobatreader&logoColor=white" alt="Paper"></a>
+  <a href="https://arxiv.org/abs/2607.27205"><img src="https://img.shields.io/badge/Paper-arXiv-b31b1b?logo=arxiv&logoColor=white" alt="Paper"></a>
   <a href="https://h-embodvis.github.io/TurboVLA/"><img src="https://img.shields.io/badge/Homepage-TurboVLA-d97706?logo=googlehome&logoColor=white" alt="Homepage"></a>
   <a href="https://github.com/H-EmbodVis/TurboVLA"><img src="https://img.shields.io/badge/Code-GitHub-181717?logo=github" alt="Code"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-2563eb" alt="License"></a>
 
-  <h4><em>Hengyi Xie<sup>1*</sup>, Chenfei Yao<sup>1*</sup>, Xianjin Wu</a><sup>1</sup>, Xuanyang Xi<sup>2</sup>, Yiping Tang<sup>2</sup>, Di Xu<sup>2</sup>, Yingying Zhu</a><sup>1</sup>,
-  
-  <a href="https://dk-liang.github.io/">Dingkang Liang</a><sup>1&dagger;</sup>, <a href="https://scholar.google.com/citations?user=UeltiQ4AAAAJ&hl=en">Xiang Bai</a><sup>1, </sup> Han Ding</a><sup>1</sup> </em></h4>
+  <h4><em>Hengyi Xie<sup>1*</sup>, Chenfei Yao<sup>1*</sup>, Xianjin Wu<sup>1</sup>, Xuanyang Xi<sup>2</sup>, Yiping Tang<sup>2</sup>, Di Xu<sup>2</sup>, Yingying Zhu<sup>1</sup>, <a href="https://dk-liang.github.io/">Dingkang Liang</a><sup>1&dagger;</sup>, <a href="https://scholar.google.com/citations?user=UeltiQ4AAAAJ&hl=en">Xiang Bai</a><sup>1</sup>, Han Ding<sup>1</sup></em></h4>
 
   <sup>1</sup> Huazhong University of Science and Technology, China<br>
   <sup>2</sup> Huawei Technologies Co. Ltd, China<br>
@@ -17,11 +15,23 @@
 
 This repository contains the official implementation of **TurboVLA** for the paper **TurboVLA: Real-Time Vision-Language-Action Model at 32 Hz on an RTX 4090 with &lt;1 GB VRAM**.
 
+<div align="center">
+  <img src="assets/figures/real-world-tasks.gif" alt="TurboVLA real-world tasks with synchronous inference" width="100%">
+  <br>
+  <sub><b>Real-world tasks with synchronous policy inference.</b></sub>
+</div>
+
 ## 📄 Abstract
 
 Vision-language-action (VLA) models commonly adopt an LLM-centric V &rarr; L &rarr; A pathway, where visual observations are projected into the representation space of a large language model before being decoded into robot actions. Although effective, this design incurs substantial computation and memory overhead at every policy invocation.
 
 In this work, we introduce **TurboVLA**, a new VLA paradigm that reformulates the conventional V &rarr; L &rarr; A pathway as a direct V + L &rarr; A mapping. Instead of using a large language model as the central interface between perception and action, TurboVLA independently encodes visual observations and language instructions, directly exchanges information between them through lightweight bidirectional vision-language interaction, and predicts continuous action chunks with a compact decoder. This simple design constructs task-conditioned representations directly from visual and linguistic features, significantly reducing the computational and memory costs of VLA inference. On LIBERO, TurboVLA achieves 97.7% average success with only 0.2B parameters, 31.2 ms inference latency, and 0.9 GB inference VRAM on a consumer-grade RTX 4090, matching or outperforming substantially larger VLA policies. These results establish TurboVLA as a simple and effective alternative to the prevailing LLM-centric VLA paradigm, offering a new perspective on how vision, language, and action can be connected for efficient robotic manipulation.
+
+<div align="center">
+  <a href="assets/figures/paradigm-and-performance.png">
+    <img src="assets/figures/paradigm-and-performance.png" alt="Comparison of LLM-centric VLA and TurboVLA with latency, success rate, and parameter results" width="100%">
+  </a>
+</div>
 
 ---
 
@@ -32,6 +42,12 @@ In this work, we introduce **TurboVLA**, a new VLA paradigm that reformulates th
     <img src="assets/figures/architecture-overview.png" alt="TurboVLA architecture and bidirectional vision-language interaction module" width="100%">
   </a>
 </div>
+
+---
+
+## 📣 News
+
+- `2026.07.30`: Released the paper, training and evaluation code.
 
 ---
 
@@ -166,6 +182,7 @@ python experiments/libero/evaluate.py \
   --num_trials_per_task 50 \
   --chunk_size 12 \
   --num_open_loop_steps 12 \
+  --precision bf16 \
   --result_json_path outputs/evaluation/libero_object.json
 ```
 
@@ -222,12 +239,14 @@ TurboVLA builds upon the following projects and resources:
 If TurboVLA is useful in your research, please consider citing the paper:
 
 ```bibtex
-@misc{xie2026turbovla,
+@article{xie2026turbovla,
   title  = {TurboVLA: Real-Time Vision-Language-Action Model at
             32 Hz on an RTX 4090 with <1 GB VRAM},
   author = {Xie, Hengyi and Yao, Chenfei and Wu, Xianjin and
             Xi, Xuanyang and Tang, Yiping and Xu, Di and
-            Liang, Dingkang and Bai, Xiang},
+            Zhu, Yingying and Liang, Dingkang and Bai, Xiang and
+            Ding, Han},
+  journal = {arXiv preprint arXiv:2607.27205},
   year   = {2026}
 }
 ```
