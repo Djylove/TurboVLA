@@ -224,6 +224,19 @@ img {
   color: var(--green);
 }
 
+.authors a {
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: color 160ms ease, text-decoration-color 160ms ease;
+}
+
+.authors a:hover,
+.authors a:focus-visible {
+  color: var(--green);
+  text-decoration-color: currentColor;
+}
+
 .affiliations {
   margin: 7px 0 0;
   color: var(--muted);
@@ -1478,7 +1491,15 @@ body {
   text-align: left;
 }
 
-.real-world-card figcaption span {
+.real-world-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.real-world-card .real-world-title > span {
   color: var(--green);
   font-family: Arial, Helvetica, sans-serif;
   font-size: 11px;
@@ -1492,6 +1513,32 @@ body {
   font-size: 22px;
   font-weight: 500;
   line-height: 1.1;
+}
+
+.inference-mode {
+  margin-left: auto;
+  padding: 5px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  color: #305c3c;
+  background: #edf6e7;
+  border: 1px solid #bdd7b0;
+  border-radius: 4px;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.inference-mode svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2.25;
 }
 
 .metrics {
@@ -1964,8 +2011,12 @@ footer {
 
   .real-world-card figcaption {
     padding: 0 0 11px;
-    align-items: baseline;
+    align-items: center;
     flex-wrap: wrap;
+  }
+
+  .inference-mode {
+    margin-left: 0;
   }
 
   .real-world-card figcaption strong {

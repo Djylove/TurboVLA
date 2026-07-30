@@ -50,7 +50,12 @@
           </p>
 
           <div class="hero-actions">
-            <a class="button button-primary" aria-disabled="true">
+            <a
+              class="button button-primary"
+              href="https://arxiv.org/abs/2607.27205"
+              target="_blank"
+              rel="noreferrer"
+            >
               <i data-lucide="file-text"></i>
               Paper
             </a>
@@ -70,17 +75,20 @@
           </div>
 
           <div class="authors" aria-label="Authors">
-            <span>Hengyi Xie<sup>*</sup></span>
-            <span>Chenfei Yao<sup>*</sup></span>
-            <span>Xianjin Wu</span>
-            <span>Xuanyang Xi</span>
-            <span>Yiping Tang</span>
-            <span>Di Xu</span>
-            <span>Dingkang Liang<sup>&dagger;</sup></span>
-            <span>Xiang Bai</span>
+            <span>Hengyi Xie<sup>1*</sup></span>
+            <span>Chenfei Yao<sup>1*</sup></span>
+            <span>Xianjin Wu<sup>1</sup></span>
+            <span>Xuanyang Xi<sup>2</sup></span>
+            <span>Yiping Tang<sup>2</sup></span>
+            <span>Di Xu<sup>2</sup></span>
+            <span>Yingying Zhu<sup>1</sup></span>
+            <span><a href="https://dk-liang.github.io/" target="_blank" rel="noreferrer">Dingkang Liang</a><sup>1&dagger;</sup></span>
+            <span><a href="https://scholar.google.com/citations?user=UeltiQ4AAAAJ&amp;hl=en" target="_blank" rel="noreferrer">Xiang Bai</a><sup>1</sup></span>
+            <span>Han Ding<sup>1</sup></span>
           </div>
           <p class="affiliations">
-            Huazhong University of Science and Technology &nbsp;&middot;&nbsp; Huawei Technologies
+            <sup>1</sup> Huazhong University of Science and Technology &nbsp;&middot;&nbsp;
+            <sup>2</sup> Huawei Technologies
             <br />
             <small><sup>*</sup>Equal contribution &nbsp;&nbsp; <sup>&dagger;</sup>Project lead</small>
           </p>
@@ -96,8 +104,18 @@
           <div class="real-world-grid reveal" aria-label="Real-world demonstration videos">
             <figure class="video-card real-world-card">
               <figcaption>
-                <span>Real World</span>
-                <strong>Real-World Tasks</strong>
+                <span class="real-world-title">
+                  <span>Real World</span>
+                  <strong>Real-World Tasks</strong>
+                </span>
+                <span
+                  class="inference-mode"
+                  title="Policy inference and robot execution run synchronously"
+                  aria-label="Synchronous inference"
+                >
+                  <i data-lucide="refresh-cw"></i>
+                  Synchronous Inference
+                </span>
               </figcaption>
               <video
                 src="assets/videos/real-world-tasks.mp4"
@@ -365,12 +383,14 @@
               <i data-lucide="copy"></i>
               <span>Copy</span>
             </button>
-            <pre id="bibtex"><code>@misc{xie2026turbovla,
+            <pre id="bibtex"><code>@article{xie2026turbovla,
   title  = {TurboVLA: Real-Time Vision-Language-Action Model at
             32 Hz on an RTX 4090 with &lt;1 GB VRAM},
   author = {Xie, Hengyi and Yao, Chenfei and Wu, Xianjin and
             Xi, Xuanyang and Tang, Yiping and Xu, Di and
-            Liang, Dingkang and Bai, Xiang},
+            Zhu, Yingying and Liang, Dingkang and Bai, Xiang and
+            Ding, Han},
+  journal = {arXiv preprint arXiv:2607.27205},
   year   = {2026}
 }</code></pre>
           </div>
