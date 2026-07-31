@@ -141,15 +141,14 @@ data/libero/
 `-- libero_spatial_no_noops/1.0.0/
 ```
 
-The repository provides the no-op removal, mixed-suite statistics, and BERT text-cache utilities:
+The repository provides no-op removal and mixed-suite statistics utilities:
 
 ```bash
 python scripts/libero/regenerate_libero_no_noops.py --help
 python scripts/libero/compute_mixed_stats.py --help
-python scripts/libero/build_text_cache.py --help
 ```
 
-Released normalization statistics are stored in `experiments/libero/configs/libero_all4_stats.json`. See [experiments/libero/README.md](experiments/libero/README.md) for the expected conversion and cache layout.
+Released normalization statistics are stored in `experiments/libero/configs/libero_all4_stats.json`. BERT is part of the model and runs online during both training and evaluation; no text-feature cache is required. See [experiments/libero/README.md](experiments/libero/README.md) for details.
 
 ### RoboTwin Data
 
@@ -177,9 +176,9 @@ torchrun --nproc_per_node=4 experiments/libero/train.py \
   --stats_path experiments/libero/configs/libero_all4_stats.json \
   --stats_key libero_all4_no_noops \
   --dinov3_path facebook/dinov3-vitb16-pretrain-lvd1689m \
+  --bert_path google-bert/bert-base-uncased \
   --allow_hf_download \
-  --text_cache_path data/libero_all4_bert_text_cache.pt \
-  --pretrained_gdino_ckpt /path/to/groundingdino_swint_ogc.pth \
+  --pretrained_init_ckpt /path/to/groundingdino_swint_ogc.pth \
   --checkpoint_dir outputs/libero
 ```
 
@@ -189,15 +188,16 @@ One command evaluates one checkpoint on one suite.
 
 ```bash
 python experiments/libero/evaluate.py \
-  --ckpt_path pretrained/TurboVLA/checkpoints/libero/object.pth \
+  --ckpt_path pretrained/TurboVLA/checkpoints/libero/libero_object.pth \
   --dinov3_path /path/to/dinov3-vitb \
-  --text_cache_path data/libero_all4_bert_text_cache.pt \
+  --bert_path /path/to/bert-base-uncased \
   --stats_path experiments/libero/configs/libero_all4_stats.json \
   --stats_key libero_all4_no_noops \
   --task_suite_name libero_object \
   --num_trials_per_task 50 \
   --chunk_size 12 \
   --num_open_loop_steps 12 \
+  --seed 7 \
   --precision bf16 \
   --result_json_path outputs/evaluation/libero_object.json
 ```
@@ -210,8 +210,8 @@ The paper recipe uses DINOv3 ViT-L, three camera views, 14-D absolute joint-posi
 
 ```bash
 export ROBOTWIN_DATA_ROOT="$PWD/playground/Datasets/RoboTwin"
-export GROUNDINGDINO_BERT_PATH=/path/to/bert-base-uncased
-export GROUNDINGDINO_CKPT=/path/to/groundingdino_swint_ogc.pth
+export BERT_MODEL_PATH=/path/to/bert-base-uncased
+export TURBOVLA_INIT_CKPT=/path/to/groundingdino_swint_ogc.pth
 export DINOV3_MODEL_PATH=/path/to/dinov3-vitl
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 

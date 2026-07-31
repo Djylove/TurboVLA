@@ -55,7 +55,7 @@ def build_argparser():
         "--cfg-option",
         action="append",
         default=[],
-        help="Override checkpoint config with dotlist entries like framework.action_model.action_model_type=ACT",
+        help="Override checkpoint config with dotlist entries like framework.action.horizon=50",
     )
     parser.add_argument(
         "--allow_partial_load",

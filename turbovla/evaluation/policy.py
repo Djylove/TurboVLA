@@ -1,7 +1,7 @@
 """TurboVLA policy adapter for aligned LIBERO evaluation.
 
-This module keeps the GroundingDINO evaluation protocol local to the model:
-256px DINOv3 preprocessing, GroundingDINO state normalization, hard min/max
+This module keeps the released LIBERO evaluation protocol local to its adapter:
+256px DINOv3 preprocessing, state normalization, hard min/max
 action denormalization, and the original gripper sign rule.
 """
 
@@ -11,8 +11,6 @@ import json
 import math
 import os
 import random
-import types
-from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any, Iterable, Sequence
 
@@ -28,7 +26,7 @@ ACTION_DIM = 7
 STATE_DIM = 8
 
 DEFAULT_DINOV3_PATH = ""
-DEFAULT_TEXT_CACHE_PATH = ""
+DEFAULT_BERT_PATH = ""
 
 ACTION_MIN = np.asarray(
     [
@@ -192,14 +190,14 @@ def state_from_libero_obs(obs: dict[str, Any]) -> np.ndarray:
 def normalize_state(state_np: np.ndarray) -> torch.Tensor:
     state = np.asarray(state_np, dtype=np.float32).reshape(-1)
     if state.shape[0] != STATE_DIM:
-        raise ValueError(f"GroundingDINO state must have {STATE_DIM} dims, got {state.shape}")
+        raise ValueError(f"TurboVLA state must have {STATE_DIM} dims, got {state.shape}")
     return torch.from_numpy((state - PROPRIO_MEAN) / (PROPRIO_STD + 1e-6)).float()
 
 
 def denormalize_arm_action(action_norm_np: np.ndarray) -> np.ndarray:
     action = np.asarray(action_norm_np, dtype=np.float32).reshape(-1)
     if action.shape[0] < 6:
-        raise ValueError(f"GroundingDINO action must have at least 6 dims, got {action.shape}")
+        raise ValueError(f"TurboVLA action must have at least 6 dims, got {action.shape}")
     action = action[:6].copy()
     return 0.5 * (action + 1.0) * (ACTION_MAX[:6] - ACTION_MIN[:6]) + ACTION_MIN[:6]
 
@@ -271,7 +269,7 @@ def _strip_module_prefix(state_dict: dict[str, torch.Tensor]) -> dict[str, torch
 
 def _make_model_args(
     dinov3_path: str,
-    text_cache_path: str,
+    bert_path: str,
     hidden_dim: int,
     nheads: int,
     dim_feedforward: int,
@@ -286,16 +284,18 @@ def _make_model_args(
     fusion_dropout: float,
     fusion_droppath: float,
     sub_sentence_present: bool,
+    text_padding_length: int,
+    precision: str,
     allow_hf_download: bool,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        LOCAL_DINOV3_PATH=dinov3_path,
-        text_cache_path=text_cache_path,
-        text_encoder_type=text_cache_path,
+        dinov3_path=dinov3_path,
+        bert_path=bert_path,
         hidden_dim=hidden_dim,
         nheads=nheads,
         dim_feedforward=dim_feedforward,
         max_text_len=max_text_len,
+        text_padding_length=text_padding_length,
         sub_sentence_present=sub_sentence_present,
         vla_feature_enhancer_layers=vla_feature_enhancer_layers,
         enhancer_inner_dim=enhancer_inner_dim,
@@ -309,13 +309,19 @@ def _make_model_args(
         local_files_only=not allow_hf_download,
         freeze_text_encoder=True,
         freeze_vision_encoder=True,
+        dinov3_precision="bf16" if precision == "bf16" else "bf16_autocast",
+        num_views=2,
+        image_size=EXPECTED_IMAGE_SIZE,
+        position_embedding="view",
+        encode_views_separately=True,
+        padding_strategy="key_padding_mask",
     )
 
 
-def load_build_turbovla_vla():
-    from ..models.turbovla_eval import build_turbovla_eval
+def load_turbovla_builder():
+    from ..models.turbovla import build_turbovla
 
-    return build_turbovla_eval, "turbovla.models.turbovla_eval"
+    return build_turbovla, "turbovla.models.turbovla"
 
 
 class TurboVLAPolicy:
@@ -323,13 +329,14 @@ class TurboVLAPolicy:
         self,
         ckpt_path: str,
         dinov3_path: str = DEFAULT_DINOV3_PATH,
-        text_cache_path: str = DEFAULT_TEXT_CACHE_PATH,
+        bert_path: str = DEFAULT_BERT_PATH,
         device: str | torch.device | None = None,
         allow_hf_download: bool = False,
         hidden_dim: int = 256,
         nheads: int = 8,
         dim_feedforward: int = 2048,
         max_text_len: int = 256,
+        text_padding_length: int = 21,
         vla_feature_enhancer_layers: int = 6,
         enhancer_inner_dim: int = 1024,
         action_dim: int = ACTION_DIM,
@@ -348,7 +355,7 @@ class TurboVLAPolicy:
 
         self.ckpt_path = str(ckpt_path)
         self.dinov3_path = str(dinov3_path)
-        self.text_cache_path = str(text_cache_path)
+        self.bert_path = str(bert_path)
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.chunk_size = int(chunk_size)
         self.action_dim = int(action_dim)
@@ -361,14 +368,14 @@ class TurboVLAPolicy:
 
         if not self.dinov3_path:
             raise ValueError("dinov3_path must point to a local DINOv3 checkpoint or a HF model id")
-        if not self.text_cache_path:
-            raise ValueError("text_cache_path must point to a generated text cache")
+        if not self.bert_path:
+            raise ValueError("bert_path must point to BERT base uncased or a compatible model id")
         if not allow_hf_download and not os.path.isdir(self.dinov3_path):
             raise FileNotFoundError(f"local DINOv3 directory not found: {self.dinov3_path}")
-        if not os.path.isfile(self.text_cache_path):
-            raise FileNotFoundError(f"text cache not found: {self.text_cache_path}")
+        if not allow_hf_download and not os.path.isdir(self.bert_path):
+            raise FileNotFoundError(f"local BERT directory not found: {self.bert_path}")
 
-        build_turbovla_eval, loaded_model_path = load_build_turbovla_vla()
+        build_model, loaded_model_path = load_turbovla_builder()
         if self.verbose:
             print(f"[TurboVLAPolicy] model source: {loaded_model_path}", flush=True)
             print(
@@ -377,27 +384,43 @@ class TurboVLAPolicy:
                 f"dinov3_output_hidden_states={self.dinov3_output_hidden_states}",
                 flush=True,
             )
-        model_args = _make_model_args(
-            dinov3_path=self.dinov3_path,
-            text_cache_path=self.text_cache_path,
-            hidden_dim=hidden_dim,
-            nheads=nheads,
-            dim_feedforward=dim_feedforward,
-            max_text_len=max_text_len,
-            vla_feature_enhancer_layers=vla_feature_enhancer_layers,
-            enhancer_inner_dim=enhancer_inner_dim,
-            action_dim=action_dim,
-            chunk_size=chunk_size,
-            state_dim=state_dim,
-            num_state_tokens=num_state_tokens,
-            text_dropout=text_dropout,
-            fusion_dropout=fusion_dropout,
-            fusion_droppath=fusion_droppath,
-            sub_sentence_present=sub_sentence_present,
-            allow_hf_download=allow_hf_download,
-        )
-        self.model = build_turbovla_eval(model_args)
-        self._patch_dinov3_eval_forward()
+        self._checkpoint = torch.load(self.ckpt_path, map_location="cpu")
+        model_config = self._checkpoint.get("model_config") if isinstance(self._checkpoint, dict) else None
+        if model_config is not None:
+            from ..models.configuration import TurboVLAConfig
+
+            config = TurboVLAConfig.from_mapping(model_config)
+            config.text.model_name_or_path = self.bert_path
+            config.text.local_files_only = not allow_hf_download
+            config.vision.model_name_or_path = self.dinov3_path
+            config.vision.local_files_only = not allow_hf_download
+            config.vision.compute_precision = "bf16" if self.precision == "bf16" else "bf16_autocast"
+            self.chunk_size = config.action.horizon
+            self.action_dim = config.action.action_dim
+            self.model = build_model(config)
+        else:
+            model_args = _make_model_args(
+                dinov3_path=self.dinov3_path,
+                bert_path=self.bert_path,
+                hidden_dim=hidden_dim,
+                nheads=nheads,
+                dim_feedforward=dim_feedforward,
+                max_text_len=max_text_len,
+                text_padding_length=text_padding_length,
+                vla_feature_enhancer_layers=vla_feature_enhancer_layers,
+                enhancer_inner_dim=enhancer_inner_dim,
+                action_dim=action_dim,
+                chunk_size=chunk_size,
+                state_dim=state_dim,
+                num_state_tokens=num_state_tokens,
+                text_dropout=text_dropout,
+                fusion_dropout=fusion_dropout,
+                fusion_droppath=fusion_droppath,
+                sub_sentence_present=sub_sentence_present,
+                precision=self.precision,
+                allow_hf_download=allow_hf_download,
+            )
+            self.model = build_model(model_args)
         self._load_checkpoint()
         self._set_eval_precision()
         self.model.to(self.device)
@@ -433,87 +456,15 @@ class TurboVLAPolicy:
                 flush=True,
             )
 
-    def _patch_dinov3_eval_forward(self) -> None:
-        output_hidden_states = self.dinov3_output_hidden_states
-        precision = self.precision
-
-        def _encode_one_view(model_self, dino_pixel_values, view_idx):
-            dino_patch = model_self._get_patch_size(model_self.dinov3.config)
-            dino_h, dino_w = dino_pixel_values.shape[-2:]
-
-            if dino_h % dino_patch != 0 or dino_w % dino_patch != 0:
-                raise ValueError(
-                    f"DINOv3 input size {(dino_h, dino_w)} must be divisible by patch size {dino_patch}."
-                )
-
-            dino_expected_n = (dino_h // dino_patch) * (dino_w // dino_patch)
-            if precision == "bf16":
-                dino_pixel_values = dino_pixel_values.to(dtype=torch.bfloat16)
-
-            dino_compute_context = nullcontext()
-            if precision == "fp32" and dino_pixel_values.device.type == "cuda":
-                dino_compute_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-
-            if model_self.freeze_vision_encoder:
-                with torch.no_grad():
-                    with dino_compute_context:
-                        dino_outputs = model_self.dinov3(
-                            pixel_values=dino_pixel_values,
-                            output_hidden_states=output_hidden_states,
-                        )
-            else:
-                with dino_compute_context:
-                    dino_outputs = model_self.dinov3(
-                        pixel_values=dino_pixel_values,
-                        output_hidden_states=output_hidden_states,
-                    )
-
-            dino_tokens = model_self._extract_patch_tokens(
-                dino_outputs,
-                dino_expected_n,
-                "DINOv3",
-                allowed_prefix_tokens=(model_self.dinov3_prefix_tokens,),
-            )
-            if precision == "fp32":
-                dino_tokens = dino_tokens.float()
-            dino_tokens = model_self.vision_proj(dino_tokens)
-            return model_self._add_view_embed(dino_tokens, view_idx=view_idx)
-
-        self.model._encode_one_view = types.MethodType(_encode_one_view, self.model)
-
     def _load_checkpoint(self) -> None:
-        checkpoint = torch.load(self.ckpt_path, map_location="cpu")
-        source_state = _strip_module_prefix(_checkpoint_state_dict(checkpoint))
-        target_state = self.model.state_dict()
-
-        loadable = {}
-        skipped_shape = []
-        skipped_missing = []
-        for key, tensor in source_state.items():
-            if key not in target_state:
-                skipped_missing.append(key)
-                continue
-            if target_state[key].shape != tensor.shape:
-                skipped_shape.append((key, tuple(tensor.shape), tuple(target_state[key].shape)))
-                continue
-            loadable[key] = tensor
-
-        missing, unexpected = self.model.load_state_dict(loadable, strict=False)
+        source_state = _strip_module_prefix(_checkpoint_state_dict(self._checkpoint))
+        self.model.load_state_dict(source_state, strict=True)
         if self.verbose:
-            print(f"[GroundingDINOAlignedPolicy] loaded ckpt: {self.ckpt_path}", flush=True)
             print(
-                "[GroundingDINOAlignedPolicy] "
-                f"loadable={len(loadable)}, missing_after_load={len(missing)}, "
-                f"unexpected_after_load={len(unexpected)}, skipped_missing={len(skipped_missing)}, "
-                f"skipped_shape={len(skipped_shape)}",
+                f"[TurboVLAPolicy] strict checkpoint load: {self.ckpt_path} ({len(source_state)} tensors)",
                 flush=True,
             )
-            if missing:
-                print(f"  first missing keys: {list(missing)[:20]}", flush=True)
-            if unexpected:
-                print(f"  first unexpected keys: {list(unexpected)[:20]}", flush=True)
-            if skipped_shape:
-                print(f"  first shape mismatches: {skipped_shape[:10]}", flush=True)
+        del self._checkpoint
 
     def _build_batch(
         self,
@@ -600,6 +551,3 @@ class TurboVLAPolicy:
 def batched(iterable: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
     for start in range(0, len(iterable), size):
         yield iterable[start : start + size]
-
-
-GroundingDINOAlignedPolicy = TurboVLAPolicy

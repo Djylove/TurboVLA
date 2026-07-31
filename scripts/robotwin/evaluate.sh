@@ -33,7 +33,7 @@ fi
 
 bash "${SCRIPT_DIR}/start_eval.sh" \
   --mode demo_clean \
-  --name "${POLICY_NAME:-groundingdinoact_clean50}" \
+  --name "${POLICY_NAME:-turbovla_clean50}" \
   --ckpt "${ckpt_path}" \
   --jobs-per-gpu "${ROBOTWIN_JOBS_PER_GPU:-1}" \
   --base-port "${ROBOTWIN_BASE_PORT:-7100}" \

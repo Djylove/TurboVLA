@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mixed-suite ViT-B text-cache full-unfreeze trainer with pi0.5 knobs."""
+"""Mixed-suite ViT-B online-BERT full-unfreeze trainer with pi0.5 knobs."""
 
 from __future__ import annotations
 

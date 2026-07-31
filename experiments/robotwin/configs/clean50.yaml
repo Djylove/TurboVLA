@@ -1,32 +1,31 @@
-run_id: groundingdinoact_robotwin_clean50
+run_id: turbovla_robotwin_clean50
 run_root_dir: results/Checkpoints
 seed: 42
 wandb_entity: your_wandb_entity
-wandb_project: groundingdinoact_robotwin
+wandb_project: turbovla_robotwin
 is_debug: false
 version_id: "0.1"
 
 framework:
-  # Kept as GroundingDINODiT for compatibility with existing checkpoints.
-  name: GroundingDINODiT
+  name: TurboVLA
   text:
-    bert_path: ${oc.env:GROUNDINGDINO_BERT_PATH}
+    bert_path: ${oc.env:BERT_MODEL_PATH}
     max_text_len: 256
     sub_sentence_present: true
     local_files_only: true
     freeze_text_encoder: true
     attn_implementation: flash_attention_2
-  dinov3:
+  vision:
     model_path: ${oc.env:DINOV3_MODEL_PATH}
     image_size: 224
     num_views: 3
     local_files_only: true
     freeze_vision_encoder: false
     attn_implementation: flash_attention_2
-    vision_pos_init_std: 0.01
-    vision_pos_scale_init: 0.01
-    vision_dropout: 0.1
-  fusion:
+    position_init_std: 0.01
+    position_scale_init: 0.01
+    dropout: 0.1
+  interaction:
     hidden_dim: 256
     nheads: 8
     dim_feedforward: 2048
@@ -35,26 +34,26 @@ framework:
     text_dropout: 0.0
     fusion_dropout: 0.0
     fusion_droppath: 0.1
-  groundingdino:
-    pretrained_ckpt: ${oc.env:GROUNDINGDINO_CKPT}
+    padding_strategy: zero_fill
+    residual_style: pre_norm
+    attention_backend: sdpa
+    compute_precision: bf16_autocast
+  initialization:
+    pretrained_ckpt: ${oc.env:TURBOVLA_INIT_CKPT}
     load_pretrained: true
     load_bert: true
-    load_text_proj: true
-    load_feature_enhancer: true
-  action_model:
-    action_model_type: act
+    load_text_projection: true
+    load_interaction: true
+  action:
     action_dim: 14
     state_dim: 14
-    action_horizon: 50
-    act_hidden_dim: 256
-    act_nheads: 8
-    act_num_layers: 3
-    act_dim_feedforward: 2048
-    act_dropout: 0.1
-    act_state_tokens: 2
-    act_state_hidden_dim: 256
-    act_mlp_hidden_dim: 512
-    act_loss_type: l1
+    horizon: 50
+    num_layers: 3
+    dropout: 0.1
+    num_state_tokens: 2
+    state_hidden_dim: 256
+    mlp_hidden_dim: 512
+    loss_type: l1
 
 datasets:
   vla_data:
@@ -83,10 +82,10 @@ trainer:
   learning_rate:
     base: 5.0e-05
     text_encoder: 5.0e-05
-    dinov3: 5.0e-05
-    feature_enhancer: 5.0e-05
-    vision_proj: 5.0e-05
-    action_model: 5.0e-05
+    vision_encoder: 5.0e-05
+    vision_language_interaction: 5.0e-05
+    vision_projection: 5.0e-05
+    action_head: 5.0e-05
   lr_scheduler_type: warmup_constant_with_factor
   scheduler_specific_kwargs:
     warmup_start_factor: 0.0

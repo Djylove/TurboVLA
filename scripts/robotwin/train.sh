@@ -8,8 +8,8 @@ cd "${REPO_ROOT}"
 export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/third_party/starvla_runtime:${PYTHONPATH:-}"
 
 : "${ROBOTWIN_DATA_ROOT:?Set ROBOTWIN_DATA_ROOT to the converted RoboTwin dataset root.}"
-: "${GROUNDINGDINO_BERT_PATH:?Set GROUNDINGDINO_BERT_PATH to a local bert-base-uncased directory.}"
-: "${GROUNDINGDINO_CKPT:?Set GROUNDINGDINO_CKPT to groundingdino_swint_ogc.pth.}"
+: "${BERT_MODEL_PATH:?Set BERT_MODEL_PATH to a local bert-base-uncased directory.}"
+: "${TURBOVLA_INIT_CKPT:?Set TURBOVLA_INIT_CKPT to groundingdino_swint_ogc.pth.}"
 : "${DINOV3_MODEL_PATH:?Set DINOV3_MODEL_PATH to a local DINOv3 model directory.}"
 
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
@@ -23,7 +23,7 @@ export NCCL_TIMEOUT="${NCCL_TIMEOUT:-1000}"
 
 config_yaml="${CONFIG_YAML:-experiments/robotwin/configs/clean50.yaml}"
 run_root_dir="${RUN_ROOT_DIR:-results/Checkpoints}"
-run_id="${RUN_ID:-groundingdinoact_robotwin_clean50_dinov3large_act_pi05_bs192_100k}"
+run_id="${RUN_ID:-turbovla_robotwin_clean50_dinov3large_act_pi05_bs192_100k}"
 launcher_python="${STARVLA_PYTHON:-python}"
 num_processes="${NUM_PROCESSES:-4}"
 main_process_port="${MAIN_PROCESS_PORT:-29630}"
@@ -40,8 +40,8 @@ output_dir="${run_root_dir}/${run_id}"
 
 for required_file in \
     "${DINOV3_MODEL_PATH}/config.json" \
-    "${GROUNDINGDINO_BERT_PATH}/config.json" \
-    "${GROUNDINGDINO_CKPT}"; do
+    "${BERT_MODEL_PATH}/config.json" \
+    "${TURBOVLA_INIT_CKPT}"; do
     if [[ ! -f "${required_file}" ]]; then
         echo "[ERROR] Required model file not found: ${required_file}" >&2
         exit 1
@@ -54,7 +54,7 @@ if [[ -e "${output_dir}" ]]; then
     exit 1
 fi
 
-echo "[INFO] GroundingDINO-ACT | RoboTwin clean50"
+echo "[INFO] TurboVLA | RoboTwin clean50"
 echo "[INFO] data_root=${ROBOTWIN_DATA_ROOT}"
 echo "[INFO] output_dir=${output_dir}"
 echo "[INFO] processes=${num_processes} per_device_bs=${per_device_batch_size} grad_accum=${gradient_accumulation_steps}"
@@ -74,10 +74,10 @@ cp third_party/starvla_runtime/starVLA/training/train_robotwin_clean_act_pi05_re
   --datasets.vla_data.per_device_batch_size "${per_device_batch_size}" \
   --trainer.learning_rate.base "${learning_rate}" \
   --trainer.learning_rate.text_encoder "${learning_rate}" \
-  --trainer.learning_rate.dinov3 "${learning_rate}" \
-  --trainer.learning_rate.feature_enhancer "${learning_rate}" \
-  --trainer.learning_rate.vision_proj "${learning_rate}" \
-  --trainer.learning_rate.action_model "${learning_rate}" \
+  --trainer.learning_rate.vision_encoder "${learning_rate}" \
+  --trainer.learning_rate.vision_language_interaction "${learning_rate}" \
+  --trainer.learning_rate.vision_projection "${learning_rate}" \
+  --trainer.learning_rate.action_head "${learning_rate}" \
   --trainer.gradient_accumulation_steps "${gradient_accumulation_steps}" \
   --trainer.ema_decay "${ema_decay}" \
   --trainer.ema_device "${ema_device}" \
@@ -87,6 +87,6 @@ cp third_party/starvla_runtime/starVLA/training/train_robotwin_clean_act_pi05_re
   --trainer.logging_frequency "${logging_frequency}" \
   --run_root_dir "${run_root_dir}" \
   --run_id "${run_id}" \
-  --wandb_project "${WANDB_PROJECT:-groundingdinoact_robotwin}" \
+  --wandb_project "${WANDB_PROJECT:-turbovla_robotwin}" \
   --wandb_entity "${WANDB_ENTITY:-your_wandb_entity}" \
   "$@"

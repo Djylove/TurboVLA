@@ -1,1 +1,1 @@
-"""GroundingDINO-ACT framework package."""
+"""Vision-language-action framework adapters."""

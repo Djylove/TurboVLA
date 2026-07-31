@@ -2,7 +2,7 @@
 
 This script intentionally reuses the VLA-Adapter task/episode protocol shape,
 but bypasses OpenVLA/Prismatic preprocessing and action unnormalization. The
-policy adapter keeps GroundingDINO's 256px DINOv3 inputs, proprio stats, hard
+policy adapter keeps TurboVLA's 256px DINOv3 inputs, proprio stats, hard
 action min/max, and gripper sign rule.
 
 VLA-Adapter is MIT-licensed; see ../LICENSES/VLA-Adapter.txt.
@@ -41,19 +41,20 @@ class GenerateConfig:
     ckpt_path: str = ""
     libero_root: str = ""
     dinov3_path: str = ""
-    text_cache_path: str = ""
+    bert_path: str = ""
     stats_path: str = "experiments/libero/configs/libero_all4_stats.json"
     stats_key: str = "libero_all4_no_noops"
     normalize_binary_gripper: str = "auto"
     allow_hf_download: bool = False
 
     task_suite_name: str = "libero_10"
+    task_ids: str = ""
     num_trials_per_task: int = 50
     max_tasks: int = -1
     num_steps_wait: int = 10
     num_open_loop_steps: int = 12
     env_img_res: int = 256
-    seed: int = 42
+    seed: int = 7
     control_mode: str = "relative"
     mujoco_gl: str = "osmesa"
     pyopengl_platform: str = "osmesa"
@@ -69,6 +70,7 @@ class GenerateConfig:
     nheads: int = 8
     dim_feedforward: int = 2048
     max_text_len: int = 256
+    text_padding_length: int = 21
     vla_feature_enhancer_layers: int = 6
     enhancer_inner_dim: int = 1024
     action_dim: int = 7
@@ -136,13 +138,24 @@ def _ensure_libero_import_path(cfg: GenerateConfig) -> None:
         os.environ.setdefault("PYOPENGL_PLATFORM", cfg.pyopengl_platform)
     if cfg.osmesa_library:
         os.environ.setdefault("OSMESA_LIBRARY", cfg.osmesa_library)
+        render_lib_dir = str(Path(cfg.osmesa_library).resolve().parent)
+        current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+        ld_parts = [item for item in current_ld_path.split(":") if item]
+        if render_lib_dir not in ld_parts:
+            os.environ["LD_LIBRARY_PATH"] = ":".join([render_lib_dir, *ld_parts])
 
     candidates = []
     if cfg.libero_root:
         candidates.append(Path(cfg.libero_root))
     for path in candidates:
-        if path.exists() and str(path) not in sys.path:
-            sys.path.insert(0, str(path))
+        if path.exists():
+            resolved = str(path.resolve())
+            while resolved in sys.path:
+                sys.path.remove(resolved)
+            sys.path.insert(0, resolved)
+            # A local experiments/libero package may already have claimed the
+            # top-level name before the external benchmark path was selected.
+            sys.modules.pop("libero", None)
             return
 
 
@@ -270,8 +283,8 @@ def eval_libero(cfg: GenerateConfig) -> float:
         raise FileNotFoundError(f"TurboVLA checkpoint not found: {cfg.ckpt_path}")
     if not cfg.dinov3_path:
         raise ValueError("--dinov3_path is required")
-    if not cfg.text_cache_path:
-        raise ValueError("--text_cache_path is required")
+    if not cfg.bert_path:
+        raise ValueError("--bert_path is required")
     if not Path(cfg.stats_path).is_file():
         raise FileNotFoundError(f"stats file not found: {cfg.stats_path}")
     if cfg.task_suite_name not in LIBERO_SUITES:
@@ -296,7 +309,7 @@ def eval_libero(cfg: GenerateConfig) -> float:
     policy = TurboVLAPolicy(
         ckpt_path=cfg.ckpt_path,
         dinov3_path=cfg.dinov3_path,
-        text_cache_path=cfg.text_cache_path,
+        bert_path=cfg.bert_path,
         stats_path=cfg.stats_path,
         stats_key=cfg.stats_key,
         normalize_binary_gripper=cfg.normalize_binary_gripper,
@@ -305,6 +318,7 @@ def eval_libero(cfg: GenerateConfig) -> float:
         nheads=cfg.nheads,
         dim_feedforward=cfg.dim_feedforward,
         max_text_len=cfg.max_text_len,
+        text_padding_length=cfg.text_padding_length,
         vla_feature_enhancer_layers=cfg.vla_feature_enhancer_layers,
         enhancer_inner_dim=cfg.enhancer_inner_dim,
         action_dim=cfg.action_dim,
@@ -329,11 +343,23 @@ def eval_libero(cfg: GenerateConfig) -> float:
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[cfg.task_suite_name]()
     n_tasks = task_suite.n_tasks if cfg.max_tasks <= 0 else min(cfg.max_tasks, task_suite.n_tasks)
+    if cfg.task_ids:
+        task_ids = [int(item.strip()) for item in cfg.task_ids.split(",") if item.strip()]
+        if not task_ids:
+            raise ValueError("--task_ids did not contain any task indices")
+        invalid = [task_id for task_id in task_ids if task_id < 0 or task_id >= task_suite.n_tasks]
+        if invalid:
+            raise ValueError(f"task ids out of range for {cfg.task_suite_name}: {invalid}")
+        if len(set(task_ids)) != len(task_ids):
+            raise ValueError("--task_ids cannot contain duplicates")
+    else:
+        task_ids = list(range(n_tasks))
 
     summary = {
         "script": "turbovla_libero_evaluation",
         "ckpt_path": cfg.ckpt_path,
         "task_suite_name": cfg.task_suite_name,
+        "requested_task_ids": task_ids,
         "num_trials_per_task": cfg.num_trials_per_task,
         "num_open_loop_steps": cfg.num_open_loop_steps,
         "seed": cfg.seed,
@@ -350,7 +376,11 @@ def eval_libero(cfg: GenerateConfig) -> float:
     video_root = Path(cfg.video_out_path) / Path(cfg.ckpt_path).stem / cfg.task_suite_name
     video_root.mkdir(parents=True, exist_ok=True)
 
-    for task_id in tqdm.tqdm(range(n_tasks), desc="tasks"):
+    for task_id in tqdm.tqdm(task_ids, desc="tasks"):
+        # The released 500-episode results evaluated each task in an isolated
+        # process. Resetting here preserves that exact seed contract when a
+        # single invocation evaluates multiple task IDs.
+        set_seed_everywhere(cfg.seed)
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
         if cfg.num_trials_per_task > len(initial_states):

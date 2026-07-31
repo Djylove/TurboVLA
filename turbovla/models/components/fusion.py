@@ -98,7 +98,7 @@ def func_attention(query, context, smooth=1, raw_feature_norm="softmax", eps=1e-
 
 
 class BiMultiHeadAttention(nn.Module):
-    def __init__(self, v_dim, l_dim, embed_dim, num_heads, dropout=0.1, cfg=None):
+    def __init__(self, v_dim, l_dim, embed_dim, num_heads, dropout=0.1, cfg=None, attention_backend="manual"):
         super(BiMultiHeadAttention, self).__init__()
 
         self.embed_dim = embed_dim
@@ -112,6 +112,7 @@ class BiMultiHeadAttention(nn.Module):
         ), f"embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim} and `num_heads`: {self.num_heads})."
         self.scale = self.head_dim ** (-0.5)
         self.dropout = dropout
+        self.attention_backend = attention_backend
 
         self.v_proj = nn.Linear(self.v_dim, self.embed_dim)
         self.l_proj = nn.Linear(self.l_dim, self.embed_dim)
@@ -144,6 +145,43 @@ class BiMultiHeadAttention(nn.Module):
         nn.init.xavier_uniform_(self.out_l_proj.weight)
         self.out_l_proj.bias.data.fill_(0)
 
+    @staticmethod
+    def _padding_mask_to_sdpa(mask, dtype, target_len):
+        if mask is None:
+            return None
+        additive_mask = torch.zeros(
+            (mask.shape[0], 1, target_len, mask.shape[1]),
+            device=mask.device,
+            dtype=dtype,
+        )
+        return additive_mask.masked_fill(mask[:, None, None, :], float("-inf"))
+
+    def _forward_sdpa(self, v, l, attention_mask_v=None, attention_mask_l=None):
+        batch_size, target_len, _ = v.size()
+        source_len = l.size(1)
+        query_v = self._shape(self.v_proj(v), target_len, batch_size)
+        key_l = self._shape(self.l_proj(l), source_len, batch_size)
+        value_v = self._shape(self.values_v_proj(v), target_len, batch_size)
+        value_l = self._shape(self.values_l_proj(l), source_len, batch_size)
+        dropout_p = self.dropout if self.training else 0.0
+        output_v = F.scaled_dot_product_attention(
+            query_v,
+            key_l,
+            value_l,
+            attn_mask=self._padding_mask_to_sdpa(attention_mask_l, query_v.dtype, target_len),
+            dropout_p=dropout_p,
+        )
+        output_l = F.scaled_dot_product_attention(
+            key_l,
+            query_v,
+            value_v,
+            attn_mask=self._padding_mask_to_sdpa(attention_mask_v, key_l.dtype, source_len),
+            dropout_p=dropout_p,
+        )
+        output_v = output_v.transpose(1, 2).reshape(batch_size, target_len, self.embed_dim)
+        output_l = output_l.transpose(1, 2).reshape(batch_size, source_len, self.embed_dim)
+        return self.out_v_proj(output_v), self.out_l_proj(output_l)
+
     def forward(self, v, l, attention_mask_v=None, attention_mask_l=None):
         """_summary_
 
@@ -156,6 +194,9 @@ class BiMultiHeadAttention(nn.Module):
         Returns:
             _type_: _description_
         """
+        if self.attention_backend == "sdpa" and hasattr(F, "scaled_dot_product_attention"):
+            return self._forward_sdpa(v, l, attention_mask_v, attention_mask_l)
+
         # if os.environ.get('IPDB_SHILONG_DEBUG', None) == 'INFO':
         #     import ipdb; ipdb.set_trace()
         bsz, tgt_len, _ = v.size()
@@ -261,6 +302,8 @@ class BiAttentionBlock(nn.Module):
         drop_path=0.0,
         init_values=1e-4,
         cfg=None,
+        residual_style="normalized",
+        attention_backend="manual",
     ):
         """
         Inputs:
@@ -276,21 +319,29 @@ class BiAttentionBlock(nn.Module):
         self.layer_norm_v = nn.LayerNorm(v_dim)
         self.layer_norm_l = nn.LayerNorm(l_dim)
         self.attn = BiMultiHeadAttention(
-            v_dim=v_dim, l_dim=l_dim, embed_dim=embed_dim, num_heads=num_heads, dropout=dropout
+            v_dim=v_dim,
+            l_dim=l_dim,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            attention_backend=attention_backend,
         )
 
         # add layer scale for training stability
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.gamma_v = nn.Parameter(init_values * torch.ones((v_dim)), requires_grad=True)
         self.gamma_l = nn.Parameter(init_values * torch.ones((l_dim)), requires_grad=True)
+        self.residual_style = residual_style
 
     def forward(self, v, l, attention_mask_v=None, attention_mask_l=None):
+        residual_v, residual_l = v, l
         v = self.layer_norm_v(v)
         l = self.layer_norm_l(l)
         delta_v, delta_l = self.attn(
             v, l, attention_mask_v=attention_mask_v, attention_mask_l=attention_mask_l
         )
-        # v, l = v + delta_v, l + delta_l
+        if self.residual_style == "pre_norm":
+            v, l = residual_v, residual_l
         v = v + self.drop_path(self.gamma_v * delta_v)
         l = l + self.drop_path(self.gamma_l * delta_l)
         return v, l

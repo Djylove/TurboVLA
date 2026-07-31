@@ -88,7 +88,7 @@ class TurboVLAPolicy(base.TurboVLAPolicy):
         for state in states:
             state_np = np.asarray(state, dtype=np.float32).reshape(-1)
             if state_np.shape[0] != base.STATE_DIM:
-                raise ValueError(f"GroundingDINO state must have {base.STATE_DIM} dims, got {state_np.shape}")
+                raise ValueError(f"TurboVLA state must have {base.STATE_DIM} dims, got {state_np.shape}")
             norm = (state_np - self.proprio_mean) / (self.proprio_std + 1e-6)
             state_tensors.append(torch.from_numpy(norm).float())
         return samples, torch.stack(state_tensors, dim=0).to(self.device)
@@ -121,4 +121,3 @@ class TurboVLAPolicy(base.TurboVLAPolicy):
 get_libero_dummy_action = base.get_libero_dummy_action
 rotate_libero_image = base.rotate_libero_image
 set_seed_everywhere = base.set_seed_everywhere
-GroundingDINOAlignedPolicy = TurboVLAPolicy

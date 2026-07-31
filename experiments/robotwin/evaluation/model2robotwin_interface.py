@@ -352,7 +352,10 @@ class ModelClient:
     @staticmethod
     def get_action_chunk_size(policy_ckpt_path):
         model_config, _ = read_mode_config(policy_ckpt_path)
-        action_cfg = model_config["framework"]["action_model"]
+        framework_cfg = model_config["framework"]
+        action_cfg = framework_cfg.get("action", framework_cfg.get("action_model", {}))
+        if "horizon" in action_cfg:
+            return int(action_cfg["horizon"])
         if "action_horizon" in action_cfg:
             return int(action_cfg["action_horizon"])
         return int(action_cfg["future_action_window_size"]) + 1
@@ -360,7 +363,9 @@ class ModelClient:
     @staticmethod
     def get_state_dim(policy_ckpt_path):
         model_config, _ = read_mode_config(policy_ckpt_path)
-        return int(model_config["framework"]["action_model"].get("state_dim", 0) or 0)
+        framework_cfg = model_config["framework"]
+        action_cfg = framework_cfg.get("action", framework_cfg.get("action_model", {}))
+        return int(action_cfg.get("state_dim", 0) or 0)
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:
         image = cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)

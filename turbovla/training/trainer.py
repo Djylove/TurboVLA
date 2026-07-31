@@ -1,5 +1,6 @@
 import argparse
 import glob
+import json
 import math
 import os
 import random
@@ -27,15 +28,15 @@ class DummyArgs:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train TurboVLA with DINOv3 ViT-Base visual tokens and cached BERT text features."
+        description="Train the complete TurboVLA model with online BERT and DINOv3."
     )
 
     parser.add_argument("--dataset_dir", type=str, default="./data/libero/libero_10_no_noops/1.0.0")
     parser.add_argument("--dataset_split", type=str, default="train")
     parser.add_argument("--dinov3_path", type=str, required=True)
-    parser.add_argument("--text_cache_path", type=str, required=True)
+    parser.add_argument("--bert_path", type=str, required=True)
     parser.add_argument(
-        "--pretrained_gdino_ckpt",
+        "--pretrained_init_ckpt",
         type=str,
         required=True,
     )
@@ -74,11 +75,22 @@ def parse_args():
     parser.add_argument("--step_mix_buffer_size", type=int, default=64)
     parser.add_argument("--expected_image_size", type=int, default=256)
 
-    parser.add_argument("--text_hidden_dim", type=int, default=768)
     parser.add_argument("--hidden_dim", type=int, default=256)
     parser.add_argument("--nheads", type=int, default=8)
     parser.add_argument("--dim_feedforward", type=int, default=2048)
     parser.add_argument("--max_text_len", type=int, default=256)
+    parser.add_argument(
+        "--text_padding_length",
+        type=int,
+        default=21,
+        help="Fixed token length. LIBERO uses 21 to match the released training features.",
+    )
+    parser.add_argument(
+        "--text_layout_path",
+        type=str,
+        default="experiments/libero/configs/online_text_layout.json",
+        help="Online tokenizer layout metadata for exact released-checkpoint compatibility.",
+    )
     parser.add_argument("--vla_feature_enhancer_layers", type=int, default=6)
     parser.add_argument("--enhancer_inner_dim", type=int, default=1024)
     parser.add_argument("--action_dim", type=int, default=7)
@@ -102,13 +114,33 @@ def parse_args():
     parser.add_argument("--freeze_backbones", dest="freeze_backbones", action="store_true")
     parser.add_argument("--no_freeze_backbones", dest="freeze_backbones", action="store_false")
 
-    parser.set_defaults(require_feature_enhancer_preload=True)
-    parser.add_argument("--require_feature_enhancer_preload", dest="require_feature_enhancer_preload", action="store_true")
-    parser.add_argument("--no_require_feature_enhancer_preload", dest="require_feature_enhancer_preload", action="store_false")
+    parser.set_defaults(freeze_text_encoder=True)
+    parser.add_argument("--freeze_text_encoder", dest="freeze_text_encoder", action="store_true")
+    parser.add_argument("--train_text_encoder", dest="freeze_text_encoder", action="store_false")
 
-    parser.set_defaults(load_text_proj_from_gdino=True)
-    parser.add_argument("--load_text_proj_from_gdino", dest="load_text_proj_from_gdino", action="store_true")
-    parser.add_argument("--no_load_text_proj_from_gdino", dest="load_text_proj_from_gdino", action="store_false")
+    parser.set_defaults(require_feature_enhancer_preload=True)
+    parser.add_argument(
+        "--require_feature_enhancer_preload",
+        dest="require_feature_enhancer_preload",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no_require_feature_enhancer_preload",
+        dest="require_feature_enhancer_preload",
+        action="store_false",
+    )
+
+    parser.set_defaults(load_text_projection_from_init=True)
+    parser.add_argument(
+        "--load_text_projection_from_init",
+        dest="load_text_projection_from_init",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--no_load_text_projection_from_init",
+        dest="load_text_projection_from_init",
+        action="store_false",
+    )
 
     parser.set_defaults(require_text_proj_preload=True)
     parser.add_argument("--require_text_proj_preload", dest="require_text_proj_preload", action="store_true")
@@ -153,90 +185,26 @@ def cleanup_distributed():
         dist.destroy_process_group()
 
 
-class CachedTextBank:
-    def __init__(self, payload, path):
-        if not isinstance(payload, dict):
-            raise ValueError(f"text cache at {path} must be a dict")
-        for key in ["instructions", "last_hidden_state", "attention_mask"]:
-            if key not in payload:
-                raise ValueError(f"text cache at {path} missing required key: {key}")
-
-        self.path = path
-        self.instructions = [str(item) for item in payload["instructions"]]
-        raw_mapping = payload.get("instruction_to_index")
-        if raw_mapping is None:
-            raw_mapping = {instruction: idx for idx, instruction in enumerate(self.instructions)}
-        self.instruction_to_index = {str(key): int(value) for key, value in raw_mapping.items()}
-        self.stripped_to_index = {}
-        for instruction, idx in self.instruction_to_index.items():
-            self.stripped_to_index.setdefault(instruction.strip(), idx)
-
-        self.last_hidden_state = payload["last_hidden_state"].detach().cpu().contiguous()
-        self.attention_mask = payload["attention_mask"].detach().cpu().bool().contiguous()
-        self.text_self_attention_masks = payload.get("text_self_attention_masks")
-        if self.text_self_attention_masks is not None:
-            self.text_self_attention_masks = self.text_self_attention_masks.detach().cpu().bool().contiguous()
-
-        if self.last_hidden_state.ndim != 3:
-            raise ValueError(f"last_hidden_state should be [N, L, H], got {self.last_hidden_state.shape}")
-        if self.attention_mask.ndim != 2:
-            raise ValueError(f"attention_mask should be [N, L], got {self.attention_mask.shape}")
-        if tuple(self.last_hidden_state.shape[:2]) != tuple(self.attention_mask.shape):
-            raise ValueError(
-                f"text cache shape mismatch: last_hidden_state={self.last_hidden_state.shape}, "
-                f"attention_mask={self.attention_mask.shape}"
-            )
-        if len(self.instructions) != self.last_hidden_state.shape[0]:
-            raise ValueError(
-                f"instruction count {len(self.instructions)} does not match cache rows "
-                f"{self.last_hidden_state.shape[0]}"
-            )
-
-    @classmethod
-    def load(cls, path):
-        if not os.path.isfile(path):
-            raise FileNotFoundError(
-                f"text cache not found: {path}. Build it first with build_libero_instruction_text_cache.py"
-            )
-        payload = torch.load(path, map_location="cpu")
-        return cls(payload, path)
-
-    @property
-    def text_hidden_dim(self):
-        return int(self.last_hidden_state.shape[-1])
-
-    def lookup(self, instructions):
-        indices = []
-        for instruction in instructions:
-            instruction = str(instruction)
-            idx = self.instruction_to_index.get(instruction)
-            if idx is None:
-                idx = self.stripped_to_index.get(instruction.strip())
-            if idx is None:
-                known = "\n".join(f"- {item}" for item in self.instructions[:20])
-                raise KeyError(
-                    f"instruction not found in text cache: {instruction!r}\nKnown cached instructions:\n{known}"
-                )
-            indices.append(idx)
-
-        idx_tensor = torch.tensor(indices, dtype=torch.long)
-        result = {
-            "last_hidden_state": self.last_hidden_state.index_select(0, idx_tensor),
-            "attention_mask": self.attention_mask.index_select(0, idx_tensor),
-        }
-        if self.text_self_attention_masks is not None:
-            result["text_self_attention_masks"] = self.text_self_attention_masks.index_select(0, idx_tensor)
-        return result
-
-
 def build_model_architecture(args):
+    text_layout = {}
+    if args.text_layout_path:
+        with open(args.text_layout_path, "r", encoding="utf-8") as handle:
+            text_layout = json.load(handle)
+        configured_length = int(text_layout["output_padding_length"])
+        if configured_length != args.text_padding_length:
+            raise ValueError(
+                f"text layout output length {configured_length} does not match "
+                f"--text_padding_length={args.text_padding_length}"
+            )
     model_args = DummyArgs()
-    model_args.LOCAL_DINOV3_PATH = args.dinov3_path
-    model_args.text_hidden_dim = args.text_hidden_dim
+    model_args.dinov3_path = args.dinov3_path
+    model_args.bert_path = args.bert_path
     model_args.hidden_dim = args.hidden_dim
     model_args.nheads = args.nheads
     model_args.dim_feedforward = args.dim_feedforward
     model_args.max_text_len = args.max_text_len
+    model_args.text_padding_length = args.text_padding_length
+    model_args.text_padding_length_by_instruction = text_layout.get("padding_length_by_instruction", {})
     model_args.vla_feature_enhancer_layers = args.vla_feature_enhancer_layers
     model_args.enhancer_inner_dim = args.enhancer_inner_dim
     model_args.text_dropout = args.text_dropout
@@ -248,12 +216,19 @@ def build_model_architecture(args):
     model_args.num_state_tokens = args.num_state_tokens
     model_args.local_files_only = not args.allow_hf_download
     model_args.freeze_vision_encoder = args.freeze_backbones
+    model_args.freeze_text_encoder = args.freeze_text_encoder
+    model_args.dinov3_precision = getattr(args, "dinov3_precision", "bf16_autocast")
+    model_args.num_views = 2
+    model_args.image_size = args.expected_image_size
+    model_args.position_embedding = "view"
+    model_args.encode_views_separately = True
+    model_args.padding_strategy = "key_padding_mask"
     return build_turbovla(model_args)
 
 
 def freeze_backbones(model):
     for name, param in model.named_parameters():
-        if name.startswith("dinov3"):
+        if name.startswith("vision_encoder.backbone"):
             param.requires_grad = False
 
 
@@ -317,7 +292,7 @@ def build_param_group_optimizer(model, args):
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        is_dino = name.startswith("dinov3")
+        is_dino = name.startswith("vision_encoder.backbone")
         decay = _use_weight_decay(name, param)
         if is_dino and decay:
             key = ("dinov3_decay", args.dinov3_lr, args.dinov3_weight_decay)
@@ -362,7 +337,7 @@ def _extract_state_dict(ckpt_obj):
     raise ValueError("unsupported checkpoint format")
 
 
-def load_feature_enhancer_from_groundingdino(model, ckpt_path):
+def load_interaction_from_init_checkpoint(model, ckpt_path):
     if not os.path.isfile(ckpt_path):
         raise FileNotFoundError(f"checkpoint not found: {ckpt_path}")
 
@@ -378,8 +353,8 @@ def load_feature_enhancer_from_groundingdino(model, ckpt_path):
     shape_mismatch_keys = []
 
     prefix_pairs = [
-        ("transformer.encoder.fusion_layers.", "feature_enhancer.fusion_layers."),
-        ("transformer.encoder.text_layers.", "feature_enhancer.text_layers."),
+        ("transformer.encoder.fusion_layers.", "vision_language_interaction.fusion_layers."),
+        ("transformer.encoder.text_layers.", "vision_language_interaction.text_layers."),
     ]
 
     for src_key, tensor in source_state.items():
@@ -416,7 +391,7 @@ def load_feature_enhancer_from_groundingdino(model, ckpt_path):
     }
 
 
-def load_text_proj_from_groundingdino(model, ckpt_path):
+def load_text_projection_from_init_checkpoint(model, ckpt_path):
     if not os.path.isfile(ckpt_path):
         raise FileNotFoundError(f"checkpoint not found: {ckpt_path}")
 
@@ -434,7 +409,7 @@ def load_text_proj_from_groundingdino(model, ckpt_path):
     for src_key, tensor in source_state.items():
         tgt_key = None
         if src_key.startswith("feat_map."):
-            tgt_key = "text_proj." + src_key[len("feat_map."):]
+            tgt_key = "text_encoder.text_projection." + src_key[len("feat_map."):]
         else:
             continue
 
@@ -494,38 +469,36 @@ def train_model():
     is_distributed, rank, world_size, local_rank, device = setup_distributed()
 
     try:
-        text_cache = CachedTextBank.load(args.text_cache_path)
-        args.text_hidden_dim = text_cache.text_hidden_dim
         model = build_model_architecture(args)
 
-        need_any_gdino_preload = (
+        need_any_init_preload = (
             args.require_feature_enhancer_preload
             or args.require_text_proj_preload
-            or args.load_text_proj_from_gdino
+            or args.load_text_projection_from_init
         )
-        if args.pretrained_gdino_ckpt is None and need_any_gdino_preload:
+        if args.pretrained_init_ckpt is None and need_any_init_preload:
             raise ValueError(
-                "`--pretrained_gdino_ckpt` is required for requested preload options "
+                "`--pretrained_init_ckpt` is required for requested preload options "
                 "(feature-enhancer and/or text_proj)"
             )
 
-        if args.pretrained_gdino_ckpt is not None:
+        if args.pretrained_init_ckpt is not None:
             if args.require_feature_enhancer_preload:
-                fe_report = load_feature_enhancer_from_groundingdino(model, args.pretrained_gdino_ckpt)
+                fe_report = load_interaction_from_init_checkpoint(model, args.pretrained_init_ckpt)
                 if rank == 0:
-                    print("feature-enhancer preload from GroundingDINO:")
-                    print(f"  ckpt: {args.pretrained_gdino_ckpt}")
+                    print("vision-language interaction preload from init checkpoint:")
+                    print(f"  ckpt: {args.pretrained_init_ckpt}")
                     print(f"  mapped={fe_report['mapped']}")
                     print(f"  skipped_missing={fe_report['skipped_missing']}")
                     print(f"  skipped_shape={fe_report['skipped_shape']}")
                     print("missing_keys:", fe_report["missing_keys"])
                     print("shape_mismatch_keys:", fe_report["shape_mismatch_keys"])
 
-            if args.load_text_proj_from_gdino:
-                text_proj_report = load_text_proj_from_groundingdino(model, args.pretrained_gdino_ckpt)
+            if args.load_text_projection_from_init:
+                text_proj_report = load_text_projection_from_init_checkpoint(model, args.pretrained_init_ckpt)
                 if rank == 0:
-                    print("text projection preload from GroundingDINO:")
-                    print(f"  ckpt: {args.pretrained_gdino_ckpt}")
+                    print("text projection preload from init checkpoint:")
+                    print(f"  ckpt: {args.pretrained_init_ckpt}")
                     print(f"  mapped={text_proj_report['mapped']}")
                     print(f"  skipped_missing={text_proj_report['skipped_missing']}")
                     print(f"  skipped_shape={text_proj_report['skipped_shape']}")
@@ -533,7 +506,7 @@ def train_model():
                     print("shape_mismatch_keys:", text_proj_report["shape_mismatch_keys"])
             elif args.require_text_proj_preload:
                 raise ValueError(
-                    "text projection preload is required, but `--no_load_text_proj_from_gdino` was set"
+                    "text projection preload is required, but `--no_load_text_projection_from_init` was set"
                 )
 
         if args.freeze_backbones:
@@ -544,10 +517,13 @@ def train_model():
             frozen = [n for n, p in model.named_parameters() if not p.requires_grad]
             print(f"device={device}, distributed={is_distributed}, world_size={world_size}")
             print(f"dinov3_path={args.dinov3_path}")
-            print(f"text_cache_path={args.text_cache_path}")
-            print(f"text_cache_rows={len(text_cache.instructions)}, text_hidden_dim={args.text_hidden_dim}")
-            print(f"pretrained_gdino_ckpt={args.pretrained_gdino_ckpt}")
-            print(f"load_text_proj_from_gdino={args.load_text_proj_from_gdino}")
+            print(f"bert_path={args.bert_path}")
+            print(
+                f"online_bert=True, freeze_text_encoder={args.freeze_text_encoder}, "
+                f"text_padding_length={args.text_padding_length}, text_layout_path={args.text_layout_path}"
+            )
+            print(f"pretrained_init_ckpt={args.pretrained_init_ckpt}")
+            print(f"load_text_projection_from_init={args.load_text_projection_from_init}")
             print(f"max_steps={args.max_steps}, lr_schedule_steps={args.lr_schedule_steps}")
             print(
                 f"precision={args.precision}, head_lr={args.head_lr}, dinov3_lr={args.dinov3_lr}, "
@@ -668,13 +644,12 @@ def train_model():
                 gt_actions = gt_actions.to(device, non_blocking=True)
                 action_chunk_masks = action_chunk_masks.to(device, non_blocking=True)
 
-                cached_text = text_cache.lookup(instructions)
                 with torch.autocast(
                     device_type="cuda",
                     dtype=torch.bfloat16,
                     enabled=args.precision == "bf16_amp",
                 ):
-                    pred_actions = model(cached_text, samples, states)
+                    pred_actions = model(instructions, samples, states)
                     if pred_actions.shape != gt_actions.shape:
                         raise ValueError(
                             f"pred_actions.shape={pred_actions.shape}, gt_actions.shape={gt_actions.shape} mismatch"
@@ -722,6 +697,7 @@ def train_model():
                         "scheduler_state_dict": scheduler.state_dict(),
                         "loss": global_loss,
                         "args": vars(args),
+                        "model_config": unwrap_model(model).config.to_dict(),
                     },
                     save_path,
                 )

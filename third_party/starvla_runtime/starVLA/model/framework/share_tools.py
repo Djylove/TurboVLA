@@ -1,4 +1,4 @@
-"""Configuration and checkpoint helpers for GroundingDINO-ACT."""
+"""Configuration and checkpoint helpers for the StarVLA runtime adapter."""
 
 import dataclasses
 import json
@@ -50,16 +50,22 @@ def apply_config_compat(cfg, *, strict: bool = False):
     if cfg is None:
         return cfg
 
-    action_model = OmegaConf.select(cfg, "framework.action_model", default=None)
+    action_path = "framework.action"
+    action_model = OmegaConf.select(cfg, action_path, default=None)
+    if action_model is None:
+        action_path = "framework.action_model"
+        action_model = OmegaConf.select(cfg, action_path, default=None)
     if action_model is None:
         return cfg
 
-    horizon = OmegaConf.select(action_model, "action_horizon", default=None)
+    horizon = OmegaConf.select(action_model, "horizon", default=None)
+    if horizon is None:
+        horizon = OmegaConf.select(action_model, "action_horizon", default=None)
     future_window = OmegaConf.select(action_model, "future_action_window_size", default=None)
     if horizon is None and future_window is not None:
         OmegaConf.update(
             cfg,
-            "framework.action_model.action_horizon",
+            f"{action_path}.horizon",
             int(future_window) + 1,
             force_add=True,
         )

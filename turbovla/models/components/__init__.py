@@ -1,1 +1,1 @@
-"""Neural-network components adapted from GroundingDINO."""
+"""Neural-network components used by TurboVLA."""

@@ -56,7 +56,7 @@ dev = [
 [project.scripts]
 turbovla-libero-train = "turbovla.training.train_mixed:main"
 turbovla-libero-eval = "vla_adapter.rollout:main"
-turbovla-robotwin-train = "starVLA.training.train_robotwin_clean_act_pi05_recipe:main"
+turbovla-robotwin-train = "experiments.robotwin.train:main"
 turbovla-robotwin-eval = "experiments.robotwin.evaluate:main"
 
 [tool.setuptools.packages.find]

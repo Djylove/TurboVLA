@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Run the ViT-B text-cache full-unfreeze trainer with pi0.5 optimizer knobs."""
+"""Run the complete TurboVLA trainer with pi0.5 optimizer knobs."""
 
 import argparse
-from contextlib import nullcontext
 import os
 import sys
-import types
 
 import torch.optim as torch_optim
 
@@ -70,49 +68,7 @@ def parse_args_with_dinov3_precision():
 
 
 def patch_dinov3_precision(model, dinov3_precision):
-    if dinov3_precision == "bf16":
-        model.dinov3.to(dtype=trainer.torch.bfloat16)
-    else:
-        model.dinov3.float()
-
-    def _encode_one_view(self, dino_pixel_values, view_idx):
-        dino_patch = self._get_patch_size(self.dinov3.config)
-        dino_h, dino_w = dino_pixel_values.shape[-2:]
-
-        if dino_h % dino_patch != 0 or dino_w % dino_patch != 0:
-            raise ValueError(
-                f"DINOv3 input size {(dino_h, dino_w)} must be divisible by patch size {dino_patch}."
-            )
-
-        dino_expected_n = (dino_h // dino_patch) * (dino_w // dino_patch)
-        if dinov3_precision == "bf16":
-            dino_pixel_values = dino_pixel_values.to(dtype=trainer.torch.bfloat16)
-
-        dino_compute_context = nullcontext()
-        if dinov3_precision == "bf16_autocast" and dino_pixel_values.device.type == "cuda":
-            dino_compute_context = trainer.torch.autocast(device_type="cuda", dtype=trainer.torch.bfloat16)
-
-        if self.freeze_vision_encoder:
-            with trainer.torch.no_grad():
-                with dino_compute_context:
-                    dino_outputs = self.dinov3(pixel_values=dino_pixel_values, output_hidden_states=True)
-        else:
-            with dino_compute_context:
-                dino_outputs = self.dinov3(pixel_values=dino_pixel_values, output_hidden_states=True)
-
-        dino_tokens = self._extract_patch_tokens(
-            dino_outputs,
-            dino_expected_n,
-            "DINOv3",
-            allowed_prefix_tokens=(self.dinov3_prefix_tokens,),
-        )
-        if dinov3_precision in {"bf16", "bf16_autocast"}:
-            dino_tokens = dino_tokens.float()
-
-        dino_tokens = self.vision_proj(dino_tokens)
-        return self._add_view_embed(dino_tokens, view_idx=view_idx)
-
-    model._encode_one_view = types.MethodType(_encode_one_view, model)
+    model.vision_encoder.set_compute_precision(dinov3_precision)
 
 
 def build_model_architecture_with_dinov3_precision(args):

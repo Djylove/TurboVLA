@@ -1,5 +1,6 @@
 """TurboVLA model definitions."""
 
-from .turbovla import GroundingDINOVLA, TurboVLA, build_turbovla
+from .configuration import TurboVLAConfig
+from .turbovla import TurboVLA, build_turbovla
 
-__all__ = ["GroundingDINOVLA", "TurboVLA", "build_turbovla"]
+__all__ = ["TurboVLA", "TurboVLAConfig", "build_turbovla"]
