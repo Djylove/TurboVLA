@@ -67,21 +67,31 @@ def apply_config_compat(cfg, *, strict: bool = False):
 
 
 def read_mode_config(pretrained_checkpoint):
-    """Load ``config.yaml`` and normalization statistics next to a checkpoint."""
+    """Load checkpoint metadata from the nearest containing parent directory."""
     checkpoint_path = Path(pretrained_checkpoint)
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint_path}")
     if checkpoint_path.suffix not in {".pt", ".safetensors"}:
         raise ValueError(f"Unsupported checkpoint suffix: {checkpoint_path.suffix}")
 
-    run_dir = checkpoint_path.parents[1]
+    run_dir = next(
+        (
+            parent
+            for parent in checkpoint_path.parents
+            if (parent / "config.yaml").is_file() and (parent / "dataset_statistics.json").is_file()
+        ),
+        None,
+    )
+    if run_dir is None:
+        searched = ", ".join(str(parent) for parent in checkpoint_path.parents)
+        raise FileNotFoundError(
+            "Could not find checkpoint metadata files `config.yaml` and "
+            f"`dataset_statistics.json` in any parent directory of {checkpoint_path}. "
+            f"Searched: {searched}"
+        )
+
     config_path = run_dir / "config.yaml"
     statistics_path = run_dir / "dataset_statistics.json"
-    if not config_path.is_file():
-        raise FileNotFoundError(f"Missing checkpoint config: {config_path}")
-    if not statistics_path.is_file():
-        raise FileNotFoundError(f"Missing dataset statistics: {statistics_path}")
-
     logger.info(f"Loading checkpoint metadata from `{run_dir}`")
     config = OmegaConf.load(config_path)
     apply_config_compat(config)

@@ -232,7 +232,7 @@ class baseframework(PreTrainedModel):
             5. Attach normalization stats for later un-normalization
 
         Args:
-            pretrained_checkpoint: Path to .pt file inside run/checkpoints directory.
+            pretrained_checkpoint: Path to a .pt or .safetensors checkpoint file.
             **kwargs: Extra constructor overrides passed to subclass.
 
         Returns:

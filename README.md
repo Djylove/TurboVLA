@@ -110,6 +110,16 @@ Install the [RoboTwin 2.0](https://github.com/robotwin-Platform/RoboTwin) simula
 
 Model weights and benchmark datasets are external assets and are not committed to this repository.
 
+### Pretrained Checkpoints
+
+Download the complete TurboVLA release, including model weights and normalization metadata, from [Hugging Face](https://huggingface.co/H-EmbodVis/TurboVLA):
+
+```bash
+pip install -U huggingface_hub
+hf download H-EmbodVis/TurboVLA \
+  --local-dir pretrained/TurboVLA
+```
+
 ### Required Models
 
 | Asset | Source | Used by |
@@ -179,7 +189,7 @@ One command evaluates one checkpoint on one suite.
 
 ```bash
 python experiments/libero/evaluate.py \
-  --ckpt_path outputs/libero/turbovla_step_80000.pth \
+  --ckpt_path pretrained/TurboVLA/checkpoints/libero/object.pth \
   --dinov3_path /path/to/dinov3-vitb \
   --text_cache_path data/libero_all4_bert_text_cache.pt \
   --stats_path experiments/libero/configs/libero_all4_stats.json \
@@ -221,7 +231,8 @@ export ROBOTWIN_PYTHON=/path/to/robotwin-env/bin/python
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 ROBOTWIN_TEST_NUM=100 \
-bash scripts/robotwin/evaluate.sh outputs/robotwin/model_step_55000.pt
+bash scripts/robotwin/evaluate.sh \
+  pretrained/TurboVLA/checkpoints/robotwin/steps_55000_ema_model.safetensors
 ```
 
 Append task names to the evaluation command to run a subset. Omitting them evaluates all 50 clean tasks.

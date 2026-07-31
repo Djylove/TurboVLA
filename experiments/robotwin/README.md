@@ -69,7 +69,8 @@ Evaluate all clean50 tasks:
 
 ```bash
 export CUDA_VISIBLE_DEVICES=<gpu_ids>
-bash scripts/robotwin/evaluate.sh /path/to/checkpoint.pt
+bash scripts/robotwin/evaluate.sh \
+  pretrained/TurboVLA/checkpoints/robotwin/steps_55000_ema_model.safetensors
 ```
 
 Append task names to evaluate a subset. The released result is 60.2% on

@@ -7,7 +7,7 @@ cd "${REPO_ROOT}"
 
 ckpt_path="${1:-${CKPT_PATH:-}}"
 if [[ -z "${ckpt_path}" ]]; then
-    echo "Usage: bash scripts/robotwin/evaluate.sh <checkpoint.pt> [task ...]" >&2
+    echo "Usage: bash scripts/robotwin/evaluate.sh <checkpoint.{pt,safetensors}> [task ...]" >&2
     echo "       If no task is provided, all 50 clean tasks are evaluated." >&2
     exit 1
 fi
