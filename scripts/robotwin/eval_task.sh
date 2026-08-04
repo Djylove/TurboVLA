@@ -56,6 +56,9 @@ EVAL_FILES_PATH="${REPO_ROOT}/experiments/robotwin/evaluation"
 STARVLA_PATH="${REPO_ROOT}/third_party/starvla_runtime"
 
 export PYTHONPATH="${ROBOTWIN_PATH}:${PYTHONPATH:-}"
+if [[ -d "${ROBOTWIN_PATH}/envs/curobo/src" ]]; then
+    export PYTHONPATH="${ROBOTWIN_PATH}/envs/curobo/src:${PYTHONPATH}"
+fi
 export PYTHONPATH="${STARVLA_PATH}:${PYTHONPATH}"
 export PYTHONPATH="${EVAL_FILES_PATH}:${PYTHONPATH}"
 

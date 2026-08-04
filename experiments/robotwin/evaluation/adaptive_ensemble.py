@@ -17,15 +17,27 @@ class AdaptiveEnsembler:
     def reset(self):
         self.action_history.clear()
 
+    def aligned_actions(self):
+        num_actions = len(self.action_history)
+        if num_actions == 0:
+            raise RuntimeError("cannot align an empty action history")
+        cur_action = self.action_history[-1]
+        if cur_action.ndim == 1:
+            return np.stack(self.action_history)
+        return np.stack(
+            [
+                pred_actions[index]
+                for index, pred_actions in zip(
+                    range(num_actions - 1, -1, -1),
+                    self.action_history,
+                )
+            ]
+        )
+
     def ensemble_action(self, cur_action):
         self.action_history.append(cur_action)
-        num_actions = len(self.action_history)
-        if cur_action.ndim == 1:
-            curr_act_preds = np.stack(self.action_history)
-        else:
-            curr_act_preds = np.stack(
-                [pred_actions[i] for (i, pred_actions) in zip(range(num_actions - 1, -1, -1), self.action_history)]
-            )
+        curr_act_preds = self.aligned_actions()
+        num_actions = len(curr_act_preds)
 
         # calculate cosine similarity between the current prediction and all previous predictions
         ref = curr_act_preds[num_actions - 1, :]

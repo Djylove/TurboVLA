@@ -14,6 +14,7 @@ dist/
 playground/
 outputs/
 checkpoints/
+pretrained/
 weights/
 logs/
 wandb/

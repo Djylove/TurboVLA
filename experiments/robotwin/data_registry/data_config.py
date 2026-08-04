@@ -139,5 +139,9 @@ DATASET_NAMED_MIXTURES = {
     "robotwin_clean_50": [
         (f"Clean/{task_name}", 1.0, "robotwin50")
         for task_name in _CLEAN50_TASKS
-    ]
+    ],
+    # Bounded local baseline used by Interactive Training before clean50 scale-up.
+    "robotwin_clean_beat_block_hammer": [
+        ("Clean/beat_block_hammer", 1.0, "robotwin50")
+    ],
 }

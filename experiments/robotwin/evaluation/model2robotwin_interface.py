@@ -1,11 +1,13 @@
+import json
+import os
 from collections import deque
 from pathlib import Path
 from typing import Dict, Optional
 
 import cv2 as cv
 import numpy as np
-
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
+
 try:
     from .adaptive_ensemble import AdaptiveEnsembler
 except ImportError:
@@ -49,9 +51,9 @@ class ModelClient:
         self.horizon = horizon
         self.action_ensemble = bool(action_ensemble)
         self.adaptive_ensemble_alpha = adaptive_ensemble_alpha
-        if binary_action_source not in {"ensemble", "latest"}:
+        if binary_action_source not in {"ensemble", "latest", "oldest"}:
             raise ValueError(
-                "binary_action_source must be either 'ensemble' or 'latest', "
+                "binary_action_source must be ensemble, latest, or oldest, "
                 f"got {binary_action_source!r}"
             )
         self.binary_action_source = binary_action_source
@@ -93,6 +95,15 @@ class ModelClient:
         self.state_norm_stats = self.get_state_stats(self.unnorm_key, policy_ckpt_path=policy_ckpt_path)
         self.model_uses_state = self.get_state_dim(policy_ckpt_path=policy_ckpt_path) > 0
         self.raw_actions = None
+        self.last_normalized_actions = None
+        trace_path = os.environ.get("TURBOVLA_ACTION_TRACE_JSONL")
+        self.action_trace_path = Path(trace_path).expanduser().resolve() if trace_path else None
+        if self.action_trace_path is not None:
+            if self.action_trace_path.exists():
+                raise FileExistsError(
+                    f"Refusing to replace action trace: {self.action_trace_path}"
+                )
+            self.action_trace_path.parent.mkdir(parents=True, exist_ok=True)
         print(
             "*** action_chunk_size: "
             f"{self.action_chunk_size}, temporal_ensemble: {self.action_ensemble}, "
@@ -108,6 +119,7 @@ class ModelClient:
             self.action_ensembler.reset()
         self.num_image_history = 0
         self.raw_actions = None
+        self.last_normalized_actions = None
         # Reset state tracking for delta/rel modes
         self.initial_state = None
         self.prev_action = None
@@ -159,7 +171,10 @@ class ModelClient:
         }
 
         # Temporal ensemble needs a fresh, overlapping chunk at every environment step.
-        if self.action_ensemble or step % self.exec_horizon == 0 or self.raw_actions is None:
+        queried_policy = (
+            self.action_ensemble or step % self.exec_horizon == 0 or self.raw_actions is None
+        )
+        if queried_policy:
             response = self.client.predict_action(vla_input)
             try:
                 normalized_actions = response["data"]["normalized_actions"]  # B, chunk, D
@@ -168,6 +183,7 @@ class ModelClient:
                 raise KeyError(f"Key 'normalized_actions' not found in response data: {response['data'].keys()}")
 
             normalized_actions = normalized_actions[0]
+            self.last_normalized_actions = np.asarray(normalized_actions)
             # Unnormalize to get delta/rel values
             raw_actions = self.unnormalize_actions(
                 normalized_actions=normalized_actions,
@@ -200,6 +216,8 @@ class ModelClient:
                 )
             if self.binary_action_source == "latest":
                 binary_action = self.raw_actions[0]
+            elif self.binary_action_source == "oldest":
+                binary_action = self.action_ensembler.aligned_actions()[0]
             else:
                 binary_action = current_action
             current_action = np.where(
@@ -217,8 +235,72 @@ class ModelClient:
         if self.action_mode == "delta":
             self.prev_action = current_action.copy()
 
-        current_action = current_action[[0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9, 10, 11, 13]]
-        return current_action
+        action_model_order = np.asarray(current_action).copy()
+        action_robotwin_order = action_model_order[
+            [0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9, 10, 11, 13]
+        ]
+        self._trace_action(
+            step=step,
+            queried_policy=queried_policy,
+            state_model_order=state_for_action_mode,
+            action_model_order=action_model_order,
+            action_robotwin_order=action_robotwin_order,
+        )
+        return action_robotwin_order
+
+    def _trace_action(
+        self,
+        *,
+        step: int,
+        queried_policy: bool,
+        state_model_order: np.ndarray | None,
+        action_model_order: np.ndarray,
+        action_robotwin_order: np.ndarray,
+    ) -> None:
+        if self.action_trace_path is None:
+            return
+        if self.last_normalized_actions is None or self.raw_actions is None:
+            raise RuntimeError("action trace requested before the first policy response")
+        normalized = np.asarray(self.last_normalized_actions, dtype=np.float64)
+        raw_actions = np.asarray(self.raw_actions, dtype=np.float64)
+        continuous_mask = np.asarray(
+            self.action_norm_stats.get(
+                "mask",
+                np.ones(action_model_order.shape, dtype=bool),
+            ),
+            dtype=bool,
+        )
+        state_array = (
+            None
+            if state_model_order is None
+            else np.asarray(state_model_order, dtype=np.float64)
+        )
+        action_state_l2 = None
+        if state_array is not None:
+            action_state_l2 = float(
+                np.linalg.norm(action_model_order[continuous_mask] - state_array[continuous_mask])
+            )
+        record = {
+            "schema_version": "turbovla.robotwin_action_trace.v1",
+            "step": int(step),
+            "task_description": self.task_description,
+            "queried_policy": bool(queried_policy),
+            "normalized_saturation_fraction": float(np.mean(np.abs(normalized) >= 0.999)),
+            "normalized_continuous_saturation_fraction": float(
+                np.mean(np.abs(normalized[:, continuous_mask]) >= 0.999)
+            ),
+            "normalized_chunk_min": normalized.min(axis=0).tolist(),
+            "normalized_chunk_max": normalized.max(axis=0).tolist(),
+            "normalized_first_model_order": normalized[0].tolist(),
+            "raw_chunk_min_model_order": raw_actions.min(axis=0).tolist(),
+            "raw_chunk_max_model_order": raw_actions.max(axis=0).tolist(),
+            "selected_action_model_order": action_model_order.tolist(),
+            "selected_action_robotwin_order": action_robotwin_order.tolist(),
+            "state_model_order": None if state_array is None else state_array.tolist(),
+            "action_state_l2": action_state_l2,
+        }
+        with self.action_trace_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, allow_nan=False, sort_keys=True) + "\n")
 
     @staticmethod
     def _robotwin_state_to_model_order(state: np.ndarray) -> np.ndarray:
@@ -425,12 +507,27 @@ def get_model(usr_args):
     exec_horizon = usr_args.get("exec_horizon", None)
     exec_horizon = None if exec_horizon is None else int(exec_horizon)
     action_ensemble = bool(usr_args.get("action_ensemble", False))
+    action_ensemble_override = os.environ.get("TURBOVLA_ACTION_ENSEMBLE")
+    if action_ensemble_override is not None:
+        normalized_override = action_ensemble_override.strip().lower()
+        if normalized_override not in {"true", "false"}:
+            raise ValueError("TURBOVLA_ACTION_ENSEMBLE must be true or false")
+        action_ensemble = normalized_override == "true"
+    exec_horizon_override = os.environ.get("TURBOVLA_EXEC_HORIZON")
+    if exec_horizon_override is not None:
+        exec_horizon = int(exec_horizon_override)
+        if exec_horizon < 1:
+            raise ValueError("TURBOVLA_EXEC_HORIZON must be positive")
     action_ensemble_horizon = usr_args.get("action_ensemble_horizon", None)
     action_ensemble_horizon = (
         None if action_ensemble_horizon is None else int(action_ensemble_horizon)
     )
     adaptive_ensemble_alpha = float(usr_args.get("adaptive_ensemble_alpha", 0.1))
     binary_action_source = str(usr_args.get("binary_action_source", "ensemble"))
+    binary_action_source = os.environ.get(
+        "TURBOVLA_BINARY_ACTION_SOURCE",
+        binary_action_source,
+    )
 
     if policy_ckpt_path is None:
         raise ValueError("policy_ckpt_path must be provided in config")
