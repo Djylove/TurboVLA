@@ -77,6 +77,14 @@ class _BatchArrays:
     frame_indices: np.ndarray
 
 
+def _fixed_list_numpy(column: Any, width: int) -> np.ndarray:
+    values = column.combine_chunks()
+    flat = np.asarray(values.values.to_numpy(zero_copy_only=False), dtype=np.float32)
+    if flat.size != len(values) * width:
+        raise ValueError(f"invalid fixed-list column width: expected {width}")
+    return flat.reshape(len(values), width)
+
+
 def _decode_av1_frame(path: Path, frame_index: int) -> np.ndarray:
     try:
         import av
@@ -232,16 +240,29 @@ class Gr3AnygraspDataset:
             columns=["observation.state", "action", "episode_index", "frame_index"],
         )
         arrays = _BatchArrays(
-            states=np.asarray(table["observation.state"].to_pylist(), dtype=np.float32),
-            actions=np.asarray(table["action"].to_pylist(), dtype=np.float32),
-            episode_indices=np.asarray(table["episode_index"], dtype=np.int64),
-            frame_indices=np.asarray(table["frame_index"], dtype=np.int64),
+            states=_fixed_list_numpy(table["observation.state"], GR3_STATE_DIM),
+            actions=_fixed_list_numpy(table["action"], GR3_ACTION_DIM),
+            episode_indices=np.asarray(
+                table["episode_index"].to_numpy(), dtype=np.int64
+            ),
+            frame_indices=np.asarray(table["frame_index"].to_numpy(), dtype=np.int64),
         )
         with self._batch_cache_lock:
             self._batch_cache[batch_path] = arrays
             while len(self._batch_cache) > self.batch_cache_size:
                 self._batch_cache.popitem(last=False)
         return arrays
+
+    def preload_batches(self) -> int:
+        """Cache all referenced state/action batches once for random training."""
+        batch_paths = sorted({sample.batch_path for sample in self.samples})
+        if self.batch_cache_size < len(batch_paths):
+            raise ValueError(
+                "batch_cache_size must cover every selected batch when preloading"
+            )
+        for batch_path in batch_paths:
+            self._load_batch(batch_path)
+        return len(batch_paths)
 
     def _validate_row(self, sample: _Sample, arrays: _BatchArrays) -> None:
         if sample.row_index >= len(arrays.states):

@@ -117,6 +117,7 @@ def test_deployment_prompt_and_sample_stride_are_manifest_bound(tmp_path, monkey
     batch = dataset.__getitems__([0, 2])
     assert len(batch) == 2
     assert all(sample["lang"] == "deployment instruction" for sample in batch)
+    assert dataset.preload_batches() == 1
 
 
 def test_subtask_remains_the_backward_compatible_default(tmp_path):

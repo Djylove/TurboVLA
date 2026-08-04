@@ -105,6 +105,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--decode-threads", type=int, default=1)
+    parser.add_argument("--batch-cache-size", type=int, default=2)
+    parser.add_argument("--preload-batches", action="store_true")
     parser.add_argument("--normalization-json", type=Path)
     parser.add_argument("--horizon", type=int, default=50)
     parser.add_argument("--action-frequency-hz", type=float, default=30.0)
@@ -126,6 +128,7 @@ def main() -> None:
         or args.gradient_accumulation_steps < 1
         or args.num_workers < 0
         or args.decode_threads < 1
+        or args.batch_cache_size < 1
         or args.save_every < 1
     ):
         raise ValueError("training steps and batch sizes must be positive")
@@ -163,7 +166,11 @@ def main() -> None:
             image_size=args.image_size,
             stats=normalization,
             decode_threads=args.decode_threads,
+            batch_cache_size=args.batch_cache_size,
         )
+        if args.preload_batches:
+            preloaded = dataset.preload_batches()
+            print(f"preloaded_batches={preloaded}", flush=True)
     elif manifest_profile == GR3_PROFILE_ID:
         dataset = Gr3DaggerDataset(
             args.dataset_manifest,
@@ -289,6 +296,8 @@ def main() -> None:
                 "last_loss": last_loss,
                 "num_workers": args.num_workers,
                 "decode_threads": args.decode_threads,
+                "batch_cache_size": args.batch_cache_size,
+                "preload_batches": args.preload_batches,
                 "elapsed_seconds": time.monotonic() - started_at,
                 "model_config": config.to_dict(),
                 "normalization": dataset.stats.to_dict(),
