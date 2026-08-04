@@ -14,6 +14,7 @@ import numpy as np
 
 from .gr3_common import (
     GR3_ACTION_DIM,
+    GR3_MODEL_ACTION_DIM,
     GR3_STATE_DIM,
     Gr3NormalizationStats,
     prepare_gr3_rgb,
@@ -122,6 +123,7 @@ class Gr3AnygraspDataset:
         stats: Gr3NormalizationStats | None = None,
         batch_cache_size: int = 2,
         decode_threads: int = 1,
+        model_action_dim: int = GR3_MODEL_ACTION_DIM,
     ) -> None:
         if (
             horizon < 1
@@ -135,6 +137,9 @@ class Gr3AnygraspDataset:
         self.image_size = int(image_size)
         self.batch_cache_size = int(batch_cache_size)
         self.decode_threads = int(decode_threads)
+        self.model_action_dim = int(model_action_dim)
+        if self.model_action_dim not in {GR3_MODEL_ACTION_DIM, GR3_ACTION_DIM}:
+            raise ValueError("unsupported GR3 model action dimension")
         self._batch_cache: OrderedDict[str, _BatchArrays] = OrderedDict()
         self._batch_cache_lock = threading.Lock()
         self._decode_pool = (
@@ -351,7 +356,9 @@ class Gr3AnygraspDataset:
             "image": prepare_gr3_rgb(observation["image"], self.image_size),
             "lang": observation["lang"],
             "state": self.stats.normalize_state(observation["state"]),
-            "action": self.stats.normalize_action(padded),
+            "action": self.stats.normalize_action(
+                padded[:, : self.model_action_dim]
+            ),
             "action_mask": mask,
             "metadata": observation["metadata"],
         }

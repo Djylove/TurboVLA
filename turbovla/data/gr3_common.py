@@ -10,6 +10,20 @@ from PIL import Image
 
 GR3_STATE_DIM = 33
 GR3_ACTION_DIM = 37
+GR3_MODEL_ACTION_DIM = 33
+
+
+def canonicalize_gr3_action(value: np.ndarray) -> np.ndarray:
+    """Expand a learned 33D chunk to the external canonical 37D contract."""
+
+    array = np.asarray(value, dtype=np.float32)
+    if array.shape[-1] == GR3_ACTION_DIM:
+        return array.copy()
+    if array.shape[-1] != GR3_MODEL_ACTION_DIM:
+        raise ValueError("GR3 learned action must end in 33 dimensions")
+    canonical = np.zeros((*array.shape[:-1], GR3_ACTION_DIM), dtype=np.float32)
+    canonical[..., :GR3_MODEL_ACTION_DIM] = array
+    return canonical
 
 
 def prepare_gr3_rgb(image: np.ndarray, image_size: int, *, input_bgr: bool = False) -> np.ndarray:
@@ -57,14 +71,34 @@ class Gr3NormalizationStats:
         return ((value - self.state_mean) / self.state_std).astype(np.float32)
 
     def normalize_action(self, value: np.ndarray) -> np.ndarray:
-        scaled = 2.0 * (value - self.action_low) / (self.action_high - self.action_low) - 1.0
+        value = np.asarray(value, dtype=np.float32)
+        if value.shape[-1] not in {GR3_MODEL_ACTION_DIM, GR3_ACTION_DIM}:
+            raise ValueError(
+                "GR3 action must end in the 33D model or 37D canonical dimension"
+            )
+        dim = value.shape[-1]
+        scaled = (
+            2.0
+            * (value - self.action_low[:dim])
+            / (self.action_high[:dim] - self.action_low[:dim])
+            - 1.0
+        )
         return np.clip(scaled, -1.0, 1.0).astype(np.float32)
 
     def denormalize_action(self, value: np.ndarray) -> np.ndarray:
+        value = np.asarray(value, dtype=np.float32)
+        if value.shape[-1] not in {GR3_MODEL_ACTION_DIM, GR3_ACTION_DIM}:
+            raise ValueError(
+                "GR3 action must end in the 33D model or 37D canonical dimension"
+            )
+        dim = value.shape[-1]
         clipped = np.clip(value, -1.0, 1.0)
-        return (0.5 * (clipped + 1.0) * (self.action_high - self.action_low) + self.action_low).astype(
-            np.float32
-        )
+        return (
+            0.5
+            * (clipped + 1.0)
+            * (self.action_high[:dim] - self.action_low[:dim])
+            + self.action_low[:dim]
+        ).astype(np.float32)
 
     def to_dict(self) -> dict[str, list[float]]:
         return {

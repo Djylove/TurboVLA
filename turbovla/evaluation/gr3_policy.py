@@ -11,8 +11,10 @@ from transformers import AutoImageProcessor
 from turbovla.data.gr3_anygrasp import GR3_ANYGRASP_PROFILE_ID
 from turbovla.data.gr3_common import (
     GR3_ACTION_DIM,
+    GR3_MODEL_ACTION_DIM,
     GR3_STATE_DIM,
     Gr3NormalizationStats,
+    canonicalize_gr3_action,
     prepare_gr3_rgb,
 )
 from turbovla.data.gr3_dagger import GR3_PROFILE_ID
@@ -33,8 +35,11 @@ class TurboVLAGr3Policy:
         if payload.get("profile_id") not in {GR3_PROFILE_ID, GR3_ANYGRASP_PROFILE_ID}:
             raise ValueError("checkpoint is not a TurboVLA GR3 profile")
         config = TurboVLAConfig.from_mapping(payload["model_config"])
-        if config.action.state_dim != GR3_STATE_DIM or config.action.action_dim != GR3_ACTION_DIM:
-            raise ValueError("checkpoint does not use the GR3 33D/37D contract")
+        if config.action.state_dim != GR3_STATE_DIM or config.action.action_dim not in {
+            GR3_MODEL_ACTION_DIM,
+            GR3_ACTION_DIM,
+        }:
+            raise ValueError("checkpoint does not use a supported GR3 action contract")
         if config.vision.num_views != 1:
             raise ValueError("TurboVLA GR3 checkpoint must use one camera view")
         if dinov3_path is not None:
@@ -67,7 +72,10 @@ class TurboVLAGr3Policy:
             self.device, dtype=torch.bfloat16
         )
         prediction = self.model([str(instruction)], {"dinov3": pixels}, normalized_state)[0]
-        values = self.stats.denormalize_action(prediction.float().cpu().numpy())
+        predicted_values = self.stats.denormalize_action(
+            prediction.float().cpu().numpy()
+        )
+        values = canonicalize_gr3_action(predicted_values)
         if values.ndim != 2 or values.shape[1] != GR3_ACTION_DIM:
             raise ValueError(f"TurboVLA GR3 produced invalid action shape {values.shape}")
         if not np.isfinite(values).all():

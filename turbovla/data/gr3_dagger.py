@@ -17,6 +17,7 @@ import numpy as np
 
 from .gr3_common import (
     GR3_ACTION_DIM,
+    GR3_MODEL_ACTION_DIM,
     GR3_STATE_DIM,
     Gr3NormalizationStats,
     prepare_gr3_rgb,
@@ -144,6 +145,7 @@ class Gr3DaggerDataset:
         image_size: int = 224,
         alignment_limit_ms: float = DEFAULT_ALIGNMENT_LIMIT_MS,
         stats: Gr3NormalizationStats | None = None,
+        model_action_dim: int = GR3_MODEL_ACTION_DIM,
     ) -> None:
         if horizon < 1 or action_frequency_hz <= 0 or image_size < 16:
             raise ValueError("horizon/frequency/image_size must be positive")
@@ -152,6 +154,9 @@ class Gr3DaggerDataset:
         self.action_frequency_hz = float(action_frequency_hz)
         self.image_size = int(image_size)
         self.alignment_limit_ms = float(alignment_limit_ms)
+        self.model_action_dim = int(model_action_dim)
+        if self.model_action_dim not in {GR3_MODEL_ACTION_DIM, GR3_ACTION_DIM}:
+            raise ValueError("unsupported GR3 model action dimension")
         self.episodes = [_Episode(episode) for episode in self.manifest["episodes"]]
         self.samples: list[_Sample] = []
         period_ns = int(round(1e9 / self.action_frequency_hz))
@@ -237,7 +242,9 @@ class Gr3DaggerDataset:
             "image": episode.rgb(sample.camera, self.image_size),
             "lang": episode.instruction,
             "state": self.stats.normalize_state(episode.states[sample.state]),
-            "action": self.stats.normalize_action(actions),
+            "action": self.stats.normalize_action(
+                actions[:, : self.model_action_dim]
+            ),
             "action_mask": np.asarray(sample.mask, dtype=np.float32),
             "metadata": {
                 "episode": str(episode.path),

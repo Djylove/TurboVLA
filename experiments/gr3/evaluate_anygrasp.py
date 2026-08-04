@@ -17,7 +17,11 @@ from torch.utils.data import DataLoader, Subset
 from transformers import AutoImageProcessor
 
 from turbovla.data.gr3_anygrasp import Gr3AnygraspDataset
-from turbovla.data.gr3_common import GR3_ACTION_DIM, Gr3NormalizationStats
+from turbovla.data.gr3_common import (
+    GR3_ACTION_DIM,
+    GR3_MODEL_ACTION_DIM,
+    Gr3NormalizationStats,
+)
 from turbovla.models import TurboVLAConfig, build_turbovla
 
 from .train import _checkpoint_state, _load_compatible
@@ -104,6 +108,7 @@ def main() -> None:
         horizon=config.action.horizon,
         image_size=config.vision.image_size,
         stats=stats,
+        model_action_dim=config.action.action_dim,
     )
     if args.batch_size < 1 or args.max_batches < 1:
         parser.error("batch-size and max-batches must be positive")
@@ -147,7 +152,10 @@ def main() -> None:
 
     total_absolute_error = 0.0
     total_valid_values = 0.0
-    axis_absolute_error = torch.zeros(GR3_ACTION_DIM, dtype=torch.float64)
+    model_action_dim = int(config.action.action_dim)
+    if model_action_dim not in {GR3_MODEL_ACTION_DIM, GR3_ACTION_DIM}:
+        raise ValueError(f"unsupported GR3 model action dimension: {model_action_dim}")
+    axis_absolute_error = torch.zeros(model_action_dim, dtype=torch.float64)
     axis_valid_steps = 0.0
     evaluated_samples = 0
     latencies: list[float] = []
@@ -169,7 +177,7 @@ def main() -> None:
             error = (prediction - target).abs() * mask.unsqueeze(-1)
             total_absolute_error += float(error.sum().cpu())
             valid_steps = float(mask.sum().cpu())
-            total_valid_values += valid_steps * GR3_ACTION_DIM
+            total_valid_values += valid_steps * model_action_dim
             axis_absolute_error += error.sum(dim=(0, 1)).double().cpu()
             axis_valid_steps += valid_steps
             evaluated_samples += int(prediction.shape[0])
@@ -201,6 +209,8 @@ def main() -> None:
         "per_task_sample_count": per_task_sample_count,
         "normalized_l1": total_absolute_error / total_valid_values,
         "per_axis_normalized_l1": (axis_absolute_error / axis_valid_steps).tolist(),
+        "model_action_dim": model_action_dim,
+        "canonical_action_dim": GR3_ACTION_DIM,
         "mean_inference_latency_ms": 1000.0 * sum(latencies) / len(latencies),
         "p95_inference_latency_ms": 1000.0 * float(np.quantile(latencies, 0.95)),
         "cold_start_inference_latency_ms": 1000.0 * latencies[0],

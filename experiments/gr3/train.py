@@ -20,6 +20,7 @@ from transformers import AutoImageProcessor
 from turbovla.data.gr3_anygrasp import GR3_ANYGRASP_PROFILE_ID, Gr3AnygraspDataset
 from turbovla.data.gr3_common import (
     GR3_ACTION_DIM,
+    GR3_MODEL_ACTION_DIM,
     GR3_STATE_DIM,
     Gr3NormalizationStats,
 )
@@ -62,6 +63,22 @@ def _load_compatible(model: torch.nn.Module, path: Path) -> tuple[int, int]:
     compatible = {
         key: value for key, value in source.items() if key in target and tuple(value.shape) == tuple(target[key].shape)
     }
+    migrated_projection_keys = {
+        "action_head.decoder.action_projection.layers.2.weight",
+        "action_head.decoder.action_projection.layers.2.bias",
+    }
+    for key in migrated_projection_keys:
+        if key not in source or key not in target or key in compatible:
+            continue
+        source_value = source[key]
+        target_value = target[key]
+        if (
+            source_value.ndim == target_value.ndim
+            and source_value.shape[0] == GR3_ACTION_DIM
+            and target_value.shape[0] == GR3_MODEL_ACTION_DIM
+            and tuple(source_value.shape[1:]) == tuple(target_value.shape[1:])
+        ):
+            compatible[key] = source_value[:GR3_MODEL_ACTION_DIM].clone()
     if not compatible:
         raise RuntimeError(f"no compatible TurboVLA tensors found in {path}")
     model.load_state_dict(compatible, strict=False)
@@ -199,7 +216,7 @@ def main() -> None:
         ),
         interaction=InteractionConfig(compute_precision="bf16_autocast", attention_backend="sdpa"),
         action=ActionHeadConfig(
-            action_dim=GR3_ACTION_DIM,
+            action_dim=GR3_MODEL_ACTION_DIM,
             state_dim=GR3_STATE_DIM,
             horizon=args.horizon,
         ),
@@ -242,7 +259,9 @@ def main() -> None:
         with precision if device.type == "cuda" else nullcontext():
             prediction = model(batch["instructions"], {"dinov3": pixels}, state)
             elementwise = torch.abs(prediction - target)
-            loss = (elementwise * mask.unsqueeze(-1)).sum() / (mask.sum().clamp_min(1.0) * GR3_ACTION_DIM)
+            loss = (elementwise * mask.unsqueeze(-1)).sum() / (
+                mask.sum().clamp_min(1.0) * GR3_MODEL_ACTION_DIM
+            )
             loss = loss / args.gradient_accumulation_steps
         loss.backward()
         if step % args.gradient_accumulation_steps == 0 or step == args.max_steps:
@@ -269,6 +288,8 @@ def main() -> None:
         "dataset_id": dataset.manifest["dataset_id"],
         "profile_id": dataset.manifest["profile_id"],
         "action_frequency_hz": args.action_frequency_hz,
+        "model_action_dim": GR3_MODEL_ACTION_DIM,
+        "canonical_action_dim": GR3_ACTION_DIM,
         "last_loss": last_loss,
         "init": init_result,
         "diagnostics": dataset.normalization_diagnostics(),
@@ -294,6 +315,8 @@ def main() -> None:
                 "save_every": args.save_every,
                 "seed": args.seed,
                 "last_loss": last_loss,
+                "model_action_dim": GR3_MODEL_ACTION_DIM,
+                "canonical_action_dim": GR3_ACTION_DIM,
                 "num_workers": args.num_workers,
                 "decode_threads": args.decode_threads,
                 "batch_cache_size": args.batch_cache_size,
