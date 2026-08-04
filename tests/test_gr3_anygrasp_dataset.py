@@ -4,7 +4,9 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
+from experiments.gr3.train import _load_normalization
 from turbovla.data.gr3_anygrasp import Gr3AnygraspDataset
 
 
@@ -133,3 +135,29 @@ def test_subtask_remains_the_backward_compatible_default(tmp_path):
     assert {sample.instruction for sample in dataset.samples} == {
         "atomic instruction"
     }
+
+
+def test_preflight_normalization_is_bound_to_dataset_id(tmp_path):
+    path = tmp_path / "preflight.json"
+    path.write_text(
+        json.dumps(
+            {
+                "dataset_id": "dataset-a",
+                "normalization": {
+                    "state_mean": [0.0] * 33,
+                    "state_std": [1.0] * 33,
+                    "action_low": [-1.0] * 37,
+                    "action_high": [1.0] * 37,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stats, source = _load_normalization(path, expected_dataset_id="dataset-a")
+
+    assert stats.state_mean.shape == (33,)
+    assert source["path"] == str(path.resolve())
+    assert len(source["sha256"]) == 64
+    with pytest.raises(ValueError, match="dataset_id"):
+        _load_normalization(path, expected_dataset_id="dataset-b")

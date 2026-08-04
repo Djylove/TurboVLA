@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import time
@@ -17,7 +18,11 @@ from torch.utils.data import DataLoader
 from transformers import AutoImageProcessor
 
 from turbovla.data.gr3_anygrasp import GR3_ANYGRASP_PROFILE_ID, Gr3AnygraspDataset
-from turbovla.data.gr3_common import GR3_ACTION_DIM, GR3_STATE_DIM
+from turbovla.data.gr3_common import (
+    GR3_ACTION_DIM,
+    GR3_STATE_DIM,
+    Gr3NormalizationStats,
+)
 from turbovla.data.gr3_dagger import GR3_PROFILE_ID, Gr3DaggerDataset
 from turbovla.models import TurboVLAConfig, build_turbovla
 from turbovla.models.configuration import (
@@ -63,6 +68,19 @@ def _load_compatible(model: torch.nn.Module, path: Path) -> tuple[int, int]:
     return len(compatible), len(source) - len(compatible)
 
 
+def _load_normalization(
+    path: Path,
+    *,
+    expected_dataset_id: str,
+) -> tuple[Gr3NormalizationStats, dict[str, str]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("dataset_id") != expected_dataset_id:
+        raise ValueError("normalization dataset_id does not match training manifest")
+    stats = Gr3NormalizationStats.from_dict(payload["normalization"])
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return stats, {"path": str(path.resolve()), "sha256": digest}
+
+
 def _collate(processor, batch: list[dict[str, Any]]) -> dict[str, Any]:
     pixels = processor(images=[sample["image"] for sample in batch], return_tensors="pt")["pixel_values"]
     return {
@@ -87,6 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--decode-threads", type=int, default=1)
+    parser.add_argument("--normalization-json", type=Path)
     parser.add_argument("--horizon", type=int, default=50)
     parser.add_argument("--action-frequency-hz", type=float, default=30.0)
     parser.add_argument("--image-size", type=int, default=224)
@@ -123,6 +142,16 @@ def main() -> None:
         raise FileExistsError(f"refusing to use non-empty output directory: {args.output_dir}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     manifest_profile = json.loads(args.dataset_manifest.read_text(encoding="utf-8")).get("profile_id")
+    manifest_dataset_id = json.loads(
+        args.dataset_manifest.read_text(encoding="utf-8")
+    )["dataset_id"]
+    normalization = None
+    normalization_source = None
+    if args.normalization_json is not None:
+        normalization, normalization_source = _load_normalization(
+            args.normalization_json,
+            expected_dataset_id=manifest_dataset_id,
+        )
     if manifest_profile == GR3_ANYGRASP_PROFILE_ID:
         if args.num_workers > 0 and args.decode_threads > 1:
             raise ValueError(
@@ -132,6 +161,7 @@ def main() -> None:
             args.dataset_manifest,
             horizon=args.horizon,
             image_size=args.image_size,
+            stats=normalization,
             decode_threads=args.decode_threads,
         )
     elif manifest_profile == GR3_PROFILE_ID:
@@ -228,6 +258,7 @@ def main() -> None:
         "model_state_dict": model.state_dict(),
         "model_config": config.to_dict(),
         "normalization": dataset.stats.to_dict(),
+        "normalization_source": normalization_source,
         "dataset_id": dataset.manifest["dataset_id"],
         "profile_id": dataset.manifest["profile_id"],
         "action_frequency_hz": args.action_frequency_hz,
@@ -261,6 +292,7 @@ def main() -> None:
                 "elapsed_seconds": time.monotonic() - started_at,
                 "model_config": config.to_dict(),
                 "normalization": dataset.stats.to_dict(),
+                "normalization_source": normalization_source,
                 "diagnostics": dataset.normalization_diagnostics(),
                 "init": init_result,
             },
