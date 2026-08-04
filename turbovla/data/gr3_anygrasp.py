@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections import OrderedDict, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -111,14 +113,30 @@ class Gr3AnygraspDataset:
         image_size: int = 224,
         stats: Gr3NormalizationStats | None = None,
         batch_cache_size: int = 2,
+        decode_threads: int = 1,
     ) -> None:
-        if horizon < 1 or image_size < 16 or batch_cache_size < 1:
+        if (
+            horizon < 1
+            or image_size < 16
+            or batch_cache_size < 1
+            or decode_threads < 1
+        ):
             raise ValueError("horizon/image_size/cache size must be positive")
         self.manifest = load_gr3_anygrasp_manifest(manifest_path)
         self.horizon = int(horizon)
         self.image_size = int(image_size)
         self.batch_cache_size = int(batch_cache_size)
+        self.decode_threads = int(decode_threads)
         self._batch_cache: OrderedDict[str, _BatchArrays] = OrderedDict()
+        self._batch_cache_lock = threading.Lock()
+        self._decode_pool = (
+            ThreadPoolExecutor(
+                max_workers=self.decode_threads,
+                thread_name_prefix="gr3-anygrasp-decode",
+            )
+            if self.decode_threads > 1
+            else None
+        )
 
         binding = self.manifest["episodes"][0]
         profile = binding["profile_data"]
@@ -192,10 +210,11 @@ class Gr3AnygraspDataset:
         self.stats = stats or self.compute_stats()
 
     def _load_batch(self, batch_path: str) -> _BatchArrays:
-        cached = self._batch_cache.pop(batch_path, None)
-        if cached is not None:
-            self._batch_cache[batch_path] = cached
-            return cached
+        with self._batch_cache_lock:
+            cached = self._batch_cache.pop(batch_path, None)
+            if cached is not None:
+                self._batch_cache[batch_path] = cached
+                return cached
 
         import pyarrow.parquet as pq
 
@@ -218,9 +237,10 @@ class Gr3AnygraspDataset:
             episode_indices=np.asarray(table["episode_index"], dtype=np.int64),
             frame_indices=np.asarray(table["frame_index"], dtype=np.int64),
         )
-        self._batch_cache[batch_path] = arrays
-        while len(self._batch_cache) > self.batch_cache_size:
-            self._batch_cache.popitem(last=False)
+        with self._batch_cache_lock:
+            self._batch_cache[batch_path] = arrays
+            while len(self._batch_cache) > self.batch_cache_size:
+                self._batch_cache.popitem(last=False)
         return arrays
 
     def _validate_row(self, sample: _Sample, arrays: _BatchArrays) -> None:
@@ -314,3 +334,9 @@ class Gr3AnygraspDataset:
             "action_mask": mask,
             "metadata": observation["metadata"],
         }
+
+    def __getitems__(self, indices: list[int]) -> list[dict[str, Any]]:
+        """Decode a batch concurrently without multiprocessing/CPFS sockets."""
+        if self._decode_pool is None:
+            return [self[index] for index in indices]
+        return list(self._decode_pool.map(self.__getitem__, indices))

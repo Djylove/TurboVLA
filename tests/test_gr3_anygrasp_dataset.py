@@ -94,18 +94,27 @@ def _manifest(tmp_path: Path, *, instruction_source: str, sample_stride: int) ->
     return manifest
 
 
-def test_deployment_prompt_and_sample_stride_are_manifest_bound(tmp_path):
+def test_deployment_prompt_and_sample_stride_are_manifest_bound(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "turbovla.data.gr3_anygrasp._decode_av1_frame",
+        lambda _path, _index: np.zeros((12, 12, 3), dtype=np.uint8),
+    )
     dataset = Gr3AnygraspDataset(
         _manifest(tmp_path, instruction_source="prompt", sample_stride=2),
         horizon=3,
+        decode_threads=2,
     )
 
     assert dataset.instruction_source == "prompt"
     assert dataset.sample_stride == 2
+    assert dataset.decode_threads == 2
     assert len(dataset) == 3
     assert {sample.instruction for sample in dataset.samples} == {
         "deployment instruction"
     }
+    batch = dataset.__getitems__([0, 2])
+    assert len(batch) == 2
+    assert all(sample["lang"] == "deployment instruction" for sample in batch)
 
 
 def test_subtask_remains_the_backward_compatible_default(tmp_path):
