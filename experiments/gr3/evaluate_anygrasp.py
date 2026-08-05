@@ -109,6 +109,7 @@ def main() -> None:
         image_size=config.vision.image_size,
         stats=stats,
         model_action_dim=config.action.action_dim,
+        model_state_dim=config.action.state_dim,
     )
     if args.batch_size < 1 or args.max_batches < 1:
         parser.error("batch-size and max-batches must be positive")

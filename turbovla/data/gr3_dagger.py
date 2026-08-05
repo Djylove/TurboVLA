@@ -1,8 +1,8 @@
 """GR3-only reader for XPolicyLab DAgger v2 dataset manifests.
 
 This module intentionally does not define a generic DAgger format. It consumes
-only the ``xpolicylab.gr3_dagger_v2`` profile and produces the one-camera,
-33-state, 37-action samples used by the TurboVLA GR3 head.
+only the ``xpolicylab.gr3_dagger_v2`` profile and projects its canonical
+33-state, 37-action records to the 31-joint TurboVLA GR3 head.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import numpy as np
 from .gr3_common import (
     GR3_ACTION_DIM,
     GR3_MODEL_ACTION_DIM,
+    GR3_MODEL_STATE_DIM,
     GR3_STATE_DIM,
     Gr3NormalizationStats,
     prepare_gr3_rgb,
@@ -146,6 +147,7 @@ class Gr3DaggerDataset:
         alignment_limit_ms: float = DEFAULT_ALIGNMENT_LIMIT_MS,
         stats: Gr3NormalizationStats | None = None,
         model_action_dim: int = GR3_MODEL_ACTION_DIM,
+        model_state_dim: int = GR3_MODEL_STATE_DIM,
     ) -> None:
         if horizon < 1 or action_frequency_hz <= 0 or image_size < 16:
             raise ValueError("horizon/frequency/image_size must be positive")
@@ -155,8 +157,11 @@ class Gr3DaggerDataset:
         self.image_size = int(image_size)
         self.alignment_limit_ms = float(alignment_limit_ms)
         self.model_action_dim = int(model_action_dim)
+        self.model_state_dim = int(model_state_dim)
         if self.model_action_dim not in {GR3_MODEL_ACTION_DIM, GR3_ACTION_DIM}:
             raise ValueError("unsupported GR3 model action dimension")
+        if self.model_state_dim not in {GR3_MODEL_STATE_DIM, GR3_STATE_DIM}:
+            raise ValueError("unsupported GR3 model state dimension")
         self.episodes = [_Episode(episode) for episode in self.manifest["episodes"]]
         self.samples: list[_Sample] = []
         period_ns = int(round(1e9 / self.action_frequency_hz))
@@ -241,7 +246,9 @@ class Gr3DaggerDataset:
         return {
             "image": episode.rgb(sample.camera, self.image_size),
             "lang": episode.instruction,
-            "state": self.stats.normalize_state(episode.states[sample.state]),
+            "state": self.stats.normalize_state(
+                episode.states[sample.state, : self.model_state_dim]
+            ),
             "action": self.stats.normalize_action(
                 actions[:, : self.model_action_dim]
             ),

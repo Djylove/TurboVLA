@@ -21,6 +21,7 @@ from turbovla.data.gr3_anygrasp import GR3_ANYGRASP_PROFILE_ID, Gr3AnygraspDatas
 from turbovla.data.gr3_common import (
     GR3_ACTION_DIM,
     GR3_MODEL_ACTION_DIM,
+    GR3_MODEL_STATE_DIM,
     GR3_STATE_DIM,
     Gr3NormalizationStats,
 )
@@ -74,11 +75,30 @@ def _load_compatible(model: torch.nn.Module, path: Path) -> tuple[int, int]:
         target_value = target[key]
         if (
             source_value.ndim == target_value.ndim
-            and source_value.shape[0] == GR3_ACTION_DIM
+            and source_value.shape[0] in {33, GR3_ACTION_DIM}
             and target_value.shape[0] == GR3_MODEL_ACTION_DIM
             and tuple(source_value.shape[1:]) == tuple(target_value.shape[1:])
         ):
             compatible[key] = source_value[:GR3_MODEL_ACTION_DIM].clone()
+    migrated_state_projection_keys = {
+        "action_head.state_projection.net.0.weight": 0,
+        "action_head.state_projection.net.0.bias": 0,
+        "action_head.state_projection.net.1.weight": 1,
+    }
+    for key, axis in migrated_state_projection_keys.items():
+        if key not in source or key not in target or key in compatible:
+            continue
+        source_value = source[key]
+        target_value = target[key]
+        if (
+            source_value.shape[axis] == GR3_STATE_DIM
+            and target_value.shape[axis] == GR3_MODEL_STATE_DIM
+        ):
+            index = [slice(None)] * source_value.ndim
+            index[axis] = slice(0, GR3_MODEL_STATE_DIM)
+            candidate = source_value[tuple(index)].clone()
+            if tuple(candidate.shape) == tuple(target_value.shape):
+                compatible[key] = candidate
     if not compatible:
         raise RuntimeError(f"no compatible TurboVLA tensors found in {path}")
     model.load_state_dict(compatible, strict=False)
@@ -217,7 +237,7 @@ def main() -> None:
         interaction=InteractionConfig(compute_precision="bf16_autocast", attention_backend="sdpa"),
         action=ActionHeadConfig(
             action_dim=GR3_MODEL_ACTION_DIM,
-            state_dim=GR3_STATE_DIM,
+            state_dim=GR3_MODEL_STATE_DIM,
             horizon=args.horizon,
         ),
     )
@@ -289,6 +309,7 @@ def main() -> None:
         "profile_id": dataset.manifest["profile_id"],
         "action_frequency_hz": args.action_frequency_hz,
         "model_action_dim": GR3_MODEL_ACTION_DIM,
+        "model_state_dim": GR3_MODEL_STATE_DIM,
         "canonical_action_dim": GR3_ACTION_DIM,
         "last_loss": last_loss,
         "init": init_result,
@@ -316,6 +337,7 @@ def main() -> None:
                 "seed": args.seed,
                 "last_loss": last_loss,
                 "model_action_dim": GR3_MODEL_ACTION_DIM,
+                "model_state_dim": GR3_MODEL_STATE_DIM,
                 "canonical_action_dim": GR3_ACTION_DIM,
                 "num_workers": args.num_workers,
                 "decode_threads": args.decode_threads,

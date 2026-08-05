@@ -12,7 +12,7 @@ from turbovla.data.gr3_anygrasp import GR3_ANYGRASP_PROFILE_ID
 from turbovla.data.gr3_common import (
     GR3_ACTION_DIM,
     GR3_MODEL_ACTION_DIM,
-    GR3_STATE_DIM,
+    GR3_MODEL_STATE_DIM,
     Gr3NormalizationStats,
     canonicalize_gr3_action,
     prepare_gr3_rgb,
@@ -35,11 +35,11 @@ class TurboVLAGr3Policy:
         if payload.get("profile_id") not in {GR3_PROFILE_ID, GR3_ANYGRASP_PROFILE_ID}:
             raise ValueError("checkpoint is not a TurboVLA GR3 profile")
         config = TurboVLAConfig.from_mapping(payload["model_config"])
-        if config.action.state_dim != GR3_STATE_DIM or config.action.action_dim not in {
-            GR3_MODEL_ACTION_DIM,
-            GR3_ACTION_DIM,
-        }:
-            raise ValueError("checkpoint does not use a supported GR3 action contract")
+        if (
+            config.action.state_dim != GR3_MODEL_STATE_DIM
+            or config.action.action_dim != GR3_MODEL_ACTION_DIM
+        ):
+            raise ValueError("checkpoint does not use the GR3 31D joint contract")
         if config.vision.num_views != 1:
             raise ValueError("TurboVLA GR3 checkpoint must use one camera view")
         if dinov3_path is not None:
@@ -63,8 +63,8 @@ class TurboVLAGr3Policy:
     @torch.inference_mode()
     def predict(self, image_rgb: np.ndarray, instruction: str, state: np.ndarray) -> np.ndarray:
         state = np.asarray(state, dtype=np.float32).reshape(-1)
-        if state.shape != (GR3_STATE_DIM,) or not np.isfinite(state).all():
-            raise ValueError("TurboVLA GR3 state must be a finite 33D vector")
+        if state.shape != (GR3_MODEL_STATE_DIM,) or not np.isfinite(state).all():
+            raise ValueError("TurboVLA GR3 state must be a finite 31D joint vector")
         image = prepare_gr3_rgb(image_rgb, self.image_size)
         pixels = self.processor(images=[image], return_tensors="pt")["pixel_values"]
         pixels = pixels[:, None].to(self.device, dtype=torch.bfloat16)

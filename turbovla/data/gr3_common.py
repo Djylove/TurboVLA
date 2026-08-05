@@ -10,17 +10,18 @@ from PIL import Image
 
 GR3_STATE_DIM = 33
 GR3_ACTION_DIM = 37
-GR3_MODEL_ACTION_DIM = 33
+GR3_MODEL_STATE_DIM = 31
+GR3_MODEL_ACTION_DIM = 31
 
 
 def canonicalize_gr3_action(value: np.ndarray) -> np.ndarray:
-    """Expand a learned 33D chunk to the external canonical 37D contract."""
+    """Expand a learned 31-joint chunk to the external canonical 37D contract."""
 
     array = np.asarray(value, dtype=np.float32)
     if array.shape[-1] == GR3_ACTION_DIM:
         return array.copy()
     if array.shape[-1] != GR3_MODEL_ACTION_DIM:
-        raise ValueError("GR3 learned action must end in 33 dimensions")
+        raise ValueError("GR3 learned action must end in 31 dimensions")
     canonical = np.zeros((*array.shape[:-1], GR3_ACTION_DIM), dtype=np.float32)
     canonical[..., :GR3_MODEL_ACTION_DIM] = array
     return canonical
@@ -68,13 +69,21 @@ class Gr3NormalizationStats:
             raise ValueError("action bounds must be strictly increasing")
 
     def normalize_state(self, value: np.ndarray) -> np.ndarray:
-        return ((value - self.state_mean) / self.state_std).astype(np.float32)
+        value = np.asarray(value, dtype=np.float32)
+        if value.shape[-1] not in {GR3_MODEL_STATE_DIM, GR3_STATE_DIM}:
+            raise ValueError(
+                "GR3 state must end in the 31D model or 33D canonical dimension"
+            )
+        dim = value.shape[-1]
+        return (
+            (value - self.state_mean[:dim]) / self.state_std[:dim]
+        ).astype(np.float32)
 
     def normalize_action(self, value: np.ndarray) -> np.ndarray:
         value = np.asarray(value, dtype=np.float32)
         if value.shape[-1] not in {GR3_MODEL_ACTION_DIM, GR3_ACTION_DIM}:
             raise ValueError(
-                "GR3 action must end in the 33D model or 37D canonical dimension"
+                "GR3 action must end in the 31D model or 37D canonical dimension"
             )
         dim = value.shape[-1]
         scaled = (
@@ -89,7 +98,7 @@ class Gr3NormalizationStats:
         value = np.asarray(value, dtype=np.float32)
         if value.shape[-1] not in {GR3_MODEL_ACTION_DIM, GR3_ACTION_DIM}:
             raise ValueError(
-                "GR3 action must end in the 33D model or 37D canonical dimension"
+                "GR3 action must end in the 31D model or 37D canonical dimension"
             )
         dim = value.shape[-1]
         clipped = np.clip(value, -1.0, 1.0)

@@ -7,6 +7,11 @@ GR3 state, canonical 37D actions at 30 Hz, and per-clip subtask text. Source
 videos and action parquet files remain read-only and are not copied into the
 training workspace.
 
+The canonical dimensions above describe storage. The TurboVLA GR3 model uses
+only the first 31 named joint axes for both state and action. The two base-state
+axes are excluded before normalization, and inference pads six zero base-action
+axes when returning the external 37D action contract.
+
 `xpolicylab.gr3_dagger_v2` remains a legacy compatibility profile for the old
 recorder format. Its intervention and expert-safe-label semantics must not be
 applied to AnyGrasp data.

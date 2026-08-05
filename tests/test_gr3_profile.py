@@ -12,6 +12,7 @@ from turbovla.data.gr3_dagger import (
 )
 from turbovla.data.gr3_common import (
     GR3_MODEL_ACTION_DIM,
+    GR3_MODEL_STATE_DIM,
     canonicalize_gr3_action,
 )
 
@@ -38,7 +39,17 @@ class Gr3ProfileTest(unittest.TestCase):
         loaded = Gr3NormalizationStats.from_dict(stats.to_dict())
         np.testing.assert_array_equal(loaded.state_std, stats.state_std)
 
-    def test_model_action_normalization_uses_first_33_canonical_axes(self):
+    def test_model_state_normalization_uses_only_joint_axes(self):
+        stats = Gr3NormalizationStats(
+            state_mean=np.arange(33, dtype=np.float32),
+            state_std=np.ones(33),
+            action_low=np.full(37, -1.0),
+            action_high=np.full(37, 1.0),
+        )
+        state = np.arange(GR3_MODEL_STATE_DIM, dtype=np.float32)
+        np.testing.assert_array_equal(stats.normalize_state(state), 0.0)
+
+    def test_model_action_normalization_uses_first_31_canonical_axes(self):
         stats = Gr3NormalizationStats(
             state_mean=np.zeros(33),
             state_std=np.ones(33),
@@ -55,8 +66,8 @@ class Gr3ProfileTest(unittest.TestCase):
         )
         canonical = canonicalize_gr3_action(learned)
         self.assertEqual(canonical.shape, (2, 37))
-        np.testing.assert_array_equal(canonical[:, :33], learned)
-        np.testing.assert_array_equal(canonical[:, 33:], 0.0)
+        np.testing.assert_array_equal(canonical[:, :31], learned)
+        np.testing.assert_array_equal(canonical[:, 31:], 0.0)
 
     def test_manifest_rejects_non_gr3_profile(self):
         payload = {

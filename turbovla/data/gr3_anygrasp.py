@@ -15,6 +15,7 @@ import numpy as np
 from .gr3_common import (
     GR3_ACTION_DIM,
     GR3_MODEL_ACTION_DIM,
+    GR3_MODEL_STATE_DIM,
     GR3_STATE_DIM,
     Gr3NormalizationStats,
     prepare_gr3_rgb,
@@ -124,6 +125,7 @@ class Gr3AnygraspDataset:
         batch_cache_size: int = 2,
         decode_threads: int = 1,
         model_action_dim: int = GR3_MODEL_ACTION_DIM,
+        model_state_dim: int = GR3_MODEL_STATE_DIM,
     ) -> None:
         if (
             horizon < 1
@@ -138,8 +140,11 @@ class Gr3AnygraspDataset:
         self.batch_cache_size = int(batch_cache_size)
         self.decode_threads = int(decode_threads)
         self.model_action_dim = int(model_action_dim)
+        self.model_state_dim = int(model_state_dim)
         if self.model_action_dim not in {GR3_MODEL_ACTION_DIM, GR3_ACTION_DIM}:
             raise ValueError("unsupported GR3 model action dimension")
+        if self.model_state_dim not in {GR3_MODEL_STATE_DIM, GR3_STATE_DIM}:
+            raise ValueError("unsupported GR3 model state dimension")
         self._batch_cache: OrderedDict[str, _BatchArrays] = OrderedDict()
         self._batch_cache_lock = threading.Lock()
         self._decode_pool = (
@@ -355,7 +360,9 @@ class Gr3AnygraspDataset:
         return {
             "image": prepare_gr3_rgb(observation["image"], self.image_size),
             "lang": observation["lang"],
-            "state": self.stats.normalize_state(observation["state"]),
+            "state": self.stats.normalize_state(
+                observation["state"][: self.model_state_dim]
+            ),
             "action": self.stats.normalize_action(
                 padded[:, : self.model_action_dim]
             ),
