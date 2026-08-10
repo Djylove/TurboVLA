@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import torch
 from torch.optim import AdamW
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from transformers import AutoImageProcessor
 
 from turbovla.data.gr3_anygrasp import GR3_ANYGRASP_PROFILE_ID, Gr3AnygraspDataset
@@ -24,6 +24,7 @@ from turbovla.data.gr3_common import (
     GR3_MODEL_STATE_DIM,
     GR3_STATE_DIM,
     Gr3NormalizationStats,
+    gr3_active_hand_action_indices,
 )
 from turbovla.data.gr3_dagger import GR3_PROFILE_ID, Gr3DaggerDataset
 from turbovla.models import TurboVLAConfig, build_turbovla
@@ -129,6 +130,38 @@ def _collate(processor, batch: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _action_axis_weights(
+    stats: Gr3NormalizationStats,
+    *,
+    hand_loss_weight: float,
+    hand_axis_range_threshold: float,
+) -> tuple[torch.Tensor, tuple[int, ...]]:
+    active_hand_axes = gr3_active_hand_action_indices(
+        stats,
+        min_range=hand_axis_range_threshold,
+        model_action_dim=GR3_MODEL_ACTION_DIM,
+    )
+    weights = torch.ones(GR3_MODEL_ACTION_DIM, dtype=torch.float32)
+    if active_hand_axes:
+        weights[list(active_hand_axes)] = hand_loss_weight
+    return weights, active_hand_axes
+
+
+def _weighted_masked_l1(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+    axis_weights: torch.Tensor,
+) -> torch.Tensor:
+    if prediction.shape != target.shape or prediction.shape[-1] != len(axis_weights):
+        raise ValueError("prediction/target/action-axis weights do not align")
+    if mask.shape != prediction.shape[:-1]:
+        raise ValueError("action mask does not align with prediction")
+    weighted_error = torch.abs(prediction - target) * axis_weights
+    denominator = mask.sum().clamp_min(1.0) * axis_weights.sum()
+    return (weighted_error * mask.unsqueeze(-1)).sum() / denominator
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-manifest", type=Path, required=True)
@@ -137,6 +170,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bert-path", type=Path, required=True)
     parser.add_argument("--init-checkpoint", type=Path)
     parser.add_argument("--max-steps", type=int, default=100)
+    parser.add_argument("--step-offset", type=int, default=0)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
@@ -150,6 +184,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save-every", type=int, default=100)
+    parser.add_argument("--hand-loss-weight", type=float, default=5.0)
+    parser.add_argument("--hand-axis-range-threshold", type=float, default=0.05)
+    parser.add_argument("--grasp-sample-boost", type=float, default=3.0)
+    parser.add_argument("--grasp-close-threshold", type=float, default=-0.5)
+    parser.add_argument("--state-std-floor", type=float, default=0.02)
+    parser.add_argument("--state-clip-z", type=float, default=5.0)
+    parser.add_argument("--state-axis-dropout-prob", type=float, default=0.1)
     parser.add_argument("--train-vision-encoder", action="store_true")
     parser.add_argument("--train-text-encoder", action="store_true")
     return parser.parse_args()
@@ -161,14 +202,26 @@ def main() -> None:
         raise RuntimeError("TurboVLA GR3 training requires CUDA")
     if (
         args.max_steps < 1
+        or args.step_offset < 0
         or args.batch_size < 1
         or args.gradient_accumulation_steps < 1
         or args.num_workers < 0
         or args.decode_threads < 1
         or args.batch_cache_size < 1
         or args.save_every < 1
+        or not np.isfinite(args.hand_loss_weight)
+        or args.hand_loss_weight < 1.0
+        or not np.isfinite(args.hand_axis_range_threshold)
+        or args.hand_axis_range_threshold < 0
+        or not np.isfinite(args.grasp_sample_boost)
+        or args.grasp_sample_boost < 1.0
+        or not np.isfinite(args.state_std_floor)
+        or args.state_std_floor < 0
+        or not np.isfinite(args.state_clip_z)
+        or args.state_clip_z <= 0
+        or not 0.0 <= args.state_axis_dropout_prob < 1.0
     ):
-        raise ValueError("training steps and batch sizes must be positive")
+        raise ValueError("invalid training, hand-objective, or state-robustness option")
     for path, name in ((args.dinov3_path, "DINOv3"), (args.bert_path, "BERT")):
         if not (path / "config.json").is_file():
             raise FileNotFoundError(f"{name} config not found: {path / 'config.json'}")
@@ -214,9 +267,42 @@ def main() -> None:
             horizon=args.horizon,
             action_frequency_hz=args.action_frequency_hz,
             image_size=args.image_size,
+            stats=normalization,
         )
     else:
         raise ValueError(f"unsupported TurboVLA GR3 dataset profile: {manifest_profile}")
+    dataset.stats = dataset.stats.with_state_robustness(
+        std_floor=args.state_std_floor,
+        clip_z=args.state_clip_z,
+    )
+    axis_weights_cpu, active_hand_axes = _action_axis_weights(
+        dataset.stats,
+        hand_loss_weight=args.hand_loss_weight,
+        hand_axis_range_threshold=args.hand_axis_range_threshold,
+    )
+    if not active_hand_axes:
+        raise ValueError(
+            "dataset contains no active GR3 hand action axes at the configured range threshold"
+        )
+    phase_weights, phase_sampling = dataset.grasp_phase_sampling_weights(
+        boost=args.grasp_sample_boost,
+        close_threshold=args.grasp_close_threshold,
+    )
+    print(
+        "hand_objective="
+        + json.dumps(
+            {
+                "active_hand_axes": list(active_hand_axes),
+                "hand_loss_weight": args.hand_loss_weight,
+                "phase_sampling": phase_sampling,
+                "state_std_floor": args.state_std_floor,
+                "state_clip_z": args.state_clip_z,
+                "state_axis_dropout_prob": args.state_axis_dropout_prob,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     processor = AutoImageProcessor.from_pretrained(args.dinov3_path, local_files_only=True)
     config = TurboVLAConfig(
         text=TextEncoderConfig(
@@ -252,10 +338,22 @@ def main() -> None:
     loader_options: dict[str, Any] = {}
     if args.num_workers > 0:
         loader_options.update(persistent_workers=True, prefetch_factor=2)
+    sampler = None
+    shuffle = True
+    if args.grasp_sample_boost > 1.0:
+        sampler_generator = torch.Generator().manual_seed(args.seed)
+        sampler = WeightedRandomSampler(
+            torch.as_tensor(phase_weights, dtype=torch.double),
+            num_samples=len(dataset),
+            replacement=True,
+            generator=sampler_generator,
+        )
+        shuffle = False
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=sampler,
         num_workers=args.num_workers,
         collate_fn=lambda batch: _collate(processor, batch),
         **loader_options,
@@ -265,7 +363,42 @@ def main() -> None:
     model.train()
     last_loss = None
     started_at = time.monotonic()
-    for step in range(1, args.max_steps + 1):
+    final_step = args.step_offset + args.max_steps
+    axis_weights = axis_weights_cpu.to(device)
+
+    training_objective = {
+        "loss": "axis_weighted_masked_l1",
+        "hand_loss_weight": args.hand_loss_weight,
+        "hand_axis_range_threshold": args.hand_axis_range_threshold,
+        "active_hand_axes": list(active_hand_axes),
+        "phase_sampling": phase_sampling,
+        "state_std_floor": args.state_std_floor,
+        "state_clip_z": args.state_clip_z,
+        "state_axis_dropout_prob": args.state_axis_dropout_prob,
+    }
+
+    def deployment_checkpoint(checkpoint_step: int) -> dict[str, Any]:
+        return {
+            "model_state_dict": model.state_dict(),
+            "model_config": config.to_dict(),
+            "normalization": dataset.stats.to_dict(),
+            "normalization_source": normalization_source,
+            "dataset_id": dataset.manifest["dataset_id"],
+            "profile_id": dataset.manifest["profile_id"],
+            "action_frequency_hz": args.action_frequency_hz,
+            "model_action_dim": GR3_MODEL_ACTION_DIM,
+            "model_state_dim": GR3_MODEL_STATE_DIM,
+            "canonical_action_dim": GR3_ACTION_DIM,
+            "last_loss": last_loss,
+            "checkpoint_step": checkpoint_step,
+            "optimizer_state_included": False,
+            "init": init_result,
+            "diagnostics": dataset.normalization_diagnostics(),
+            "training_objective": training_objective,
+        }
+
+    for local_step in range(1, args.max_steps + 1):
+        step = args.step_offset + local_step
         try:
             batch = next(iterator)
         except StopIteration:
@@ -273,48 +406,47 @@ def main() -> None:
             batch = next(iterator)
         pixels = batch["pixels"].to(device, non_blocking=True)
         state = batch["state"].to(device, non_blocking=True)
+        if args.state_axis_dropout_prob > 0:
+            state = state.masked_fill(
+                torch.rand_like(state) < args.state_axis_dropout_prob,
+                0.0,
+            )
         target = batch["action"].to(device, non_blocking=True)
         mask = batch["mask"].to(device, non_blocking=True)
         precision = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
         with precision if device.type == "cuda" else nullcontext():
             prediction = model(batch["instructions"], {"dinov3": pixels}, state)
-            elementwise = torch.abs(prediction - target)
-            loss = (elementwise * mask.unsqueeze(-1)).sum() / (
-                mask.sum().clamp_min(1.0) * GR3_MODEL_ACTION_DIM
+            loss = _weighted_masked_l1(
+                prediction,
+                target,
+                mask,
+                axis_weights,
             )
             loss = loss / args.gradient_accumulation_steps
         loss.backward()
-        if step % args.gradient_accumulation_steps == 0 or step == args.max_steps:
+        if (
+            local_step % args.gradient_accumulation_steps == 0
+            or local_step == args.max_steps
+        ):
             torch.nn.utils.clip_grad_norm_(trainable, 1.0)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         last_loss = float(loss.detach().cpu()) * args.gradient_accumulation_steps
-        if step == 1 or step % 10 == 0:
+        if local_step == 1 or step % 10 == 0:
             elapsed_seconds = time.monotonic() - started_at
             print(
                 f"step={step} loss={last_loss:.6f} "
                 f"elapsed_seconds={elapsed_seconds:.1f} "
-                f"steps_per_second={step / max(elapsed_seconds, 1e-6):.4f}",
+                f"steps_per_second={local_step / max(elapsed_seconds, 1e-6):.4f}",
                 flush=True,
             )
-        if step % args.save_every == 0 and step != args.max_steps:
-            torch.save(model.state_dict(), args.output_dir / f"model_step_{step}.pt")
+        if step % args.save_every == 0 and step != final_step:
+            torch.save(
+                deployment_checkpoint(step),
+                args.output_dir / f"model_step_{step}.pt",
+            )
 
-    checkpoint = {
-        "model_state_dict": model.state_dict(),
-        "model_config": config.to_dict(),
-        "normalization": dataset.stats.to_dict(),
-        "normalization_source": normalization_source,
-        "dataset_id": dataset.manifest["dataset_id"],
-        "profile_id": dataset.manifest["profile_id"],
-        "action_frequency_hz": args.action_frequency_hz,
-        "model_action_dim": GR3_MODEL_ACTION_DIM,
-        "model_state_dim": GR3_MODEL_STATE_DIM,
-        "canonical_action_dim": GR3_ACTION_DIM,
-        "last_loss": last_loss,
-        "init": init_result,
-        "diagnostics": dataset.normalization_diagnostics(),
-    }
+    checkpoint = deployment_checkpoint(final_step)
     torch.save(checkpoint, args.output_dir / "model_final.pt")
     (args.output_dir / "training.json").write_text(
         json.dumps(
@@ -323,6 +455,8 @@ def main() -> None:
                 "profile_id": dataset.manifest["profile_id"],
                 "samples": len(dataset),
                 "max_steps": args.max_steps,
+                "step_offset": args.step_offset,
+                "final_step": final_step,
                 "learning_rate": args.learning_rate,
                 "batch_size": args.batch_size,
                 "gradient_accumulation_steps": args.gradient_accumulation_steps,
@@ -330,8 +464,12 @@ def main() -> None:
                     args.batch_size * args.gradient_accumulation_steps
                 ),
                 "sample_exposures": args.batch_size * args.max_steps,
+                "cumulative_sample_exposures": args.batch_size * final_step,
                 "approximate_dataset_epochs": (
                     args.batch_size * args.max_steps / len(dataset)
+                ),
+                "cumulative_approximate_dataset_epochs": (
+                    args.batch_size * final_step / len(dataset)
                 ),
                 "save_every": args.save_every,
                 "seed": args.seed,
@@ -348,6 +486,7 @@ def main() -> None:
                 "normalization": dataset.stats.to_dict(),
                 "normalization_source": normalization_source,
                 "diagnostics": dataset.normalization_diagnostics(),
+                "training_objective": training_objective,
                 "init": init_result,
             },
             ensure_ascii=False,

@@ -49,6 +49,34 @@ class Gr3ProfileTest(unittest.TestCase):
         state = np.arange(GR3_MODEL_STATE_DIM, dtype=np.float32)
         np.testing.assert_array_equal(stats.normalize_state(state), 0.0)
 
+    def test_robust_state_normalization_floors_scale_and_clips_ood_values(self):
+        stats = Gr3NormalizationStats(
+            state_mean=np.zeros(33),
+            state_std=np.full(33, 0.001),
+            action_low=np.full(37, -1.0),
+            action_high=np.full(37, 1.0),
+        ).with_state_robustness(std_floor=0.1, clip_z=1.5)
+
+        normalized = stats.normalize_state(np.full(31, 0.2, dtype=np.float32))
+
+        np.testing.assert_allclose(normalized, 1.5)
+        restored = Gr3NormalizationStats.from_dict(stats.to_dict())
+        self.assertEqual(restored.state_std_floor, 0.1)
+        self.assertEqual(restored.state_clip_z, 1.5)
+
+    def test_old_normalization_payload_keeps_backward_compatible_state_transform(self):
+        stats = Gr3NormalizationStats.from_dict(
+            {
+                "state_mean": [0.0] * 33,
+                "state_std": [1.0] * 33,
+                "action_low": [-1.0] * 37,
+                "action_high": [1.0] * 37,
+            }
+        )
+
+        self.assertEqual(stats.state_std_floor, 0.0)
+        self.assertIsNone(stats.state_clip_z)
+
     def test_model_action_normalization_uses_first_31_canonical_axes(self):
         stats = Gr3NormalizationStats(
             state_mean=np.zeros(33),

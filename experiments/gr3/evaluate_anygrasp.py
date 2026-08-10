@@ -19,8 +19,11 @@ from transformers import AutoImageProcessor
 from turbovla.data.gr3_anygrasp import Gr3AnygraspDataset
 from turbovla.data.gr3_common import (
     GR3_ACTION_DIM,
+    GR3_LEFT_FINGER_ACTION_INDICES,
     GR3_MODEL_ACTION_DIM,
     Gr3NormalizationStats,
+    gr3_active_hand_action_indices,
+    gr3_left_hand_closed,
 )
 from turbovla.models import TurboVLAConfig, build_turbovla
 
@@ -73,6 +76,59 @@ def _stratified_indices(
             break
         depth += 1
     return selected, per_task
+
+
+def _hand_metric_sums(
+    prediction: np.ndarray,
+    target: np.ndarray,
+    mask: np.ndarray,
+    stats: Gr3NormalizationStats,
+    *,
+    active_hand_axes: tuple[int, ...],
+    close_threshold: float = -0.5,
+) -> dict[str, float]:
+    """Return additive hand metrics for normalized action chunks."""
+
+    prediction = np.asarray(prediction, dtype=np.float32)
+    target = np.asarray(target, dtype=np.float32)
+    mask = np.asarray(mask, dtype=np.float32)
+    if prediction.shape != target.shape or mask.shape != prediction.shape[:-1]:
+        raise ValueError("hand metric inputs do not align")
+    valid = mask > 0
+    valid_steps = float(valid.sum())
+    if valid_steps <= 0:
+        return {
+            "valid_steps": 0.0,
+            "active_hand_absolute_error": 0.0,
+            "finger_aperture_absolute_error": 0.0,
+            "true_positive": 0.0,
+            "false_positive": 0.0,
+            "false_negative": 0.0,
+            "true_negative": 0.0,
+        }
+    normalized_error = np.abs(prediction - target)
+    prediction_raw = stats.denormalize_action(prediction)
+    target_raw = stats.denormalize_action(target)
+    prediction_closed = gr3_left_hand_closed(
+        prediction_raw, threshold=close_threshold
+    )
+    target_closed = gr3_left_hand_closed(target_raw, threshold=close_threshold)
+    finger_indices = list(GR3_LEFT_FINGER_ACTION_INDICES)
+    prediction_aperture = prediction_raw[..., finger_indices].mean(axis=-1)
+    target_aperture = target_raw[..., finger_indices].mean(axis=-1)
+    return {
+        "valid_steps": valid_steps,
+        "active_hand_absolute_error": float(
+            normalized_error[..., list(active_hand_axes)][valid].sum()
+        ),
+        "finger_aperture_absolute_error": float(
+            np.abs(prediction_aperture - target_aperture)[valid].sum()
+        ),
+        "true_positive": float((prediction_closed & target_closed & valid).sum()),
+        "false_positive": float((prediction_closed & ~target_closed & valid).sum()),
+        "false_negative": float((~prediction_closed & target_closed & valid).sum()),
+        "true_negative": float((~prediction_closed & ~target_closed & valid).sum()),
+    }
 
 
 def main() -> None:
@@ -158,6 +214,21 @@ def main() -> None:
         raise ValueError(f"unsupported GR3 model action dimension: {model_action_dim}")
     axis_absolute_error = torch.zeros(model_action_dim, dtype=torch.float64)
     axis_valid_steps = 0.0
+    active_hand_axes = gr3_active_hand_action_indices(
+        stats,
+        model_action_dim=model_action_dim,
+    )
+    if not active_hand_axes:
+        raise ValueError("checkpoint normalization contains no active GR3 hand axes")
+    hand_sums = {
+        "valid_steps": 0.0,
+        "active_hand_absolute_error": 0.0,
+        "finger_aperture_absolute_error": 0.0,
+        "true_positive": 0.0,
+        "false_positive": 0.0,
+        "false_negative": 0.0,
+        "true_negative": 0.0,
+    }
     evaluated_samples = 0
     latencies: list[float] = []
     with torch.inference_mode():
@@ -181,6 +252,15 @@ def main() -> None:
             total_valid_values += valid_steps * model_action_dim
             axis_absolute_error += error.sum(dim=(0, 1)).double().cpu()
             axis_valid_steps += valid_steps
+            batch_hand_sums = _hand_metric_sums(
+                prediction.detach().cpu().numpy(),
+                target.detach().cpu().numpy(),
+                mask.detach().cpu().numpy(),
+                stats,
+                active_hand_axes=active_hand_axes,
+            )
+            for key, value in batch_hand_sums.items():
+                hand_sums[key] += value
             evaluated_samples += int(prediction.shape[0])
     if evaluated_samples < 1 or total_valid_values <= 0:
         raise RuntimeError("held-out evaluation produced no valid samples")
@@ -189,6 +269,15 @@ def main() -> None:
     index_digest = hashlib.sha256(
         json.dumps(evaluation_indices, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    close_support = hand_sums["true_positive"] + hand_sums["false_negative"]
+    predicted_close = hand_sums["true_positive"] + hand_sums["false_positive"]
+    close_precision = hand_sums["true_positive"] / max(predicted_close, 1.0)
+    close_recall = hand_sums["true_positive"] / max(close_support, 1.0)
+    close_f1 = (
+        2.0 * close_precision * close_recall / (close_precision + close_recall)
+        if close_precision + close_recall > 0
+        else 0.0
+    )
 
     report = {
         "status": "passed",
@@ -210,6 +299,28 @@ def main() -> None:
         "per_task_sample_count": per_task_sample_count,
         "normalized_l1": total_absolute_error / total_valid_values,
         "per_axis_normalized_l1": (axis_absolute_error / axis_valid_steps).tolist(),
+        "hand_metrics": {
+            "active_hand_axes": list(active_hand_axes),
+            "active_hand_normalized_l1": (
+                hand_sums["active_hand_absolute_error"]
+                / (hand_sums["valid_steps"] * len(active_hand_axes))
+            ),
+            "left_finger_aperture_mae_rad": (
+                hand_sums["finger_aperture_absolute_error"]
+                / hand_sums["valid_steps"]
+            ),
+            "target_close_fraction": close_support / hand_sums["valid_steps"],
+            "predicted_close_fraction": predicted_close / hand_sums["valid_steps"],
+            "close_precision": close_precision,
+            "close_recall": close_recall,
+            "close_f1": close_f1,
+            "close_confusion": {
+                "true_positive": int(hand_sums["true_positive"]),
+                "false_positive": int(hand_sums["false_positive"]),
+                "false_negative": int(hand_sums["false_negative"]),
+                "true_negative": int(hand_sums["true_negative"]),
+            },
+        },
         "model_action_dim": model_action_dim,
         "canonical_action_dim": GR3_ACTION_DIM,
         "mean_inference_latency_ms": 1000.0 * sum(latencies) / len(latencies),

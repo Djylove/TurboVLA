@@ -18,6 +18,7 @@ from .gr3_common import (
     GR3_MODEL_STATE_DIM,
     GR3_STATE_DIM,
     Gr3NormalizationStats,
+    gr3_left_hand_closed,
     prepare_gr3_rgb,
 )
 
@@ -319,6 +320,39 @@ class Gr3AnygraspDataset:
                 for index, (low, high) in enumerate(zip(self.stats.action_low, self.stats.action_high, strict=True))
                 if high - low <= 2.01e-3
             ],
+        }
+
+    def grasp_phase_sampling_weights(
+        self,
+        *,
+        boost: float = 3.0,
+        close_threshold: float = -0.5,
+    ) -> tuple[np.ndarray, dict[str, float | int]]:
+        """Upweight samples whose target chunk contains left-hand closure."""
+
+        if not np.isfinite(boost) or boost < 1.0:
+            raise ValueError("grasp phase boost must be finite and at least one")
+        weights = np.ones(len(self.samples), dtype=np.float64)
+        boosted = 0
+        for index, sample in enumerate(self.samples):
+            arrays = self._load_batch(sample.batch_path)
+            self._validate_row(sample, arrays)
+            valid_steps = min(self.horizon, sample.clip_frames - sample.frame_offset)
+            actions = arrays.actions[sample.row_index : sample.row_index + valid_steps]
+            if bool(gr3_left_hand_closed(actions, threshold=close_threshold).any()):
+                weights[index] = boost
+                boosted += 1
+        total_weight = float(weights.sum())
+        return weights, {
+            "boost": float(boost),
+            "close_threshold": float(close_threshold),
+            "boosted_samples": boosted,
+            "boosted_sample_fraction": boosted / len(weights),
+            "expected_boosted_draw_fraction": (
+                float(weights[weights > 1.0].sum()) / total_weight
+                if total_weight > 0
+                else 0.0
+            ),
         }
 
     def __len__(self) -> int:

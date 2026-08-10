@@ -10,7 +10,13 @@ from experiments.gr3.train import _load_normalization
 from turbovla.data.gr3_anygrasp import Gr3AnygraspDataset
 
 
-def _manifest(tmp_path: Path, *, instruction_source: str, sample_stride: int) -> Path:
+def _manifest(
+    tmp_path: Path,
+    *,
+    instruction_source: str,
+    sample_stride: int,
+    actions: list[list[float]] | None = None,
+) -> Path:
     dataset_root = tmp_path / "dataset"
     batch = dataset_root / "task_1" / "batch_0"
     (batch / "meta").mkdir(parents=True)
@@ -35,7 +41,7 @@ def _manifest(tmp_path: Path, *, instruction_source: str, sample_stride: int) ->
         pa.table(
             {
                 "observation.state": [np.zeros(33, dtype=np.float32).tolist()] * 5,
-                "action": [np.zeros(37, dtype=np.float32).tolist()] * 5,
+                "action": actions or [np.zeros(37, dtype=np.float32).tolist()] * 5,
                 "episode_index": [0] * 5,
                 "frame_index": list(range(5)),
             }
@@ -164,3 +170,23 @@ def test_preflight_normalization_is_bound_to_dataset_id(tmp_path):
     assert len(source["sha256"]) == 64
     with pytest.raises(ValueError, match="dataset_id"):
         _load_normalization(path, expected_dataset_id="dataset-b")
+
+
+def test_grasp_phase_sampling_upweights_chunks_containing_closure(tmp_path):
+    actions = np.zeros((5, 37), dtype=np.float32)
+    actions[3:, 19:23] = -1.0
+    dataset = Gr3AnygraspDataset(
+        _manifest(
+            tmp_path,
+            instruction_source="prompt",
+            sample_stride=1,
+            actions=actions.tolist(),
+        ),
+        horizon=2,
+    )
+
+    weights, diagnostics = dataset.grasp_phase_sampling_weights(boost=4.0)
+
+    np.testing.assert_array_equal(weights, [1.0, 1.0, 4.0, 4.0, 4.0])
+    assert diagnostics["boosted_samples"] == 3
+    assert diagnostics["boosted_sample_fraction"] == pytest.approx(0.6)

@@ -12,6 +12,8 @@ GR3_STATE_DIM = 33
 GR3_ACTION_DIM = 37
 GR3_MODEL_STATE_DIM = 31
 GR3_MODEL_ACTION_DIM = 31
+GR3_HAND_ACTION_INDICES = tuple(range(19, 31))
+GR3_LEFT_FINGER_ACTION_INDICES = (19, 20, 21, 22)
 
 
 def canonicalize_gr3_action(value: np.ndarray) -> np.ndarray:
@@ -50,6 +52,8 @@ class Gr3NormalizationStats:
     state_std: np.ndarray
     action_low: np.ndarray
     action_high: np.ndarray
+    state_std_floor: float = 0.0
+    state_clip_z: float | None = None
 
     def __post_init__(self) -> None:
         expected = {
@@ -67,6 +71,12 @@ class Gr3NormalizationStats:
             raise ValueError("state_std must be positive")
         if np.any(self.action_high <= self.action_low):
             raise ValueError("action bounds must be strictly increasing")
+        if not np.isfinite(self.state_std_floor) or self.state_std_floor < 0:
+            raise ValueError("state_std_floor must be finite and non-negative")
+        if self.state_clip_z is not None and (
+            not np.isfinite(self.state_clip_z) or self.state_clip_z <= 0
+        ):
+            raise ValueError("state_clip_z must be finite and positive when set")
 
     def normalize_state(self, value: np.ndarray) -> np.ndarray:
         value = np.asarray(value, dtype=np.float32)
@@ -75,9 +85,11 @@ class Gr3NormalizationStats:
                 "GR3 state must end in the 31D model or 33D canonical dimension"
             )
         dim = value.shape[-1]
-        return (
-            (value - self.state_mean[:dim]) / self.state_std[:dim]
-        ).astype(np.float32)
+        scale = np.maximum(self.state_std[:dim], self.state_std_floor)
+        normalized = (value - self.state_mean[:dim]) / scale
+        if self.state_clip_z is not None:
+            normalized = np.clip(normalized, -self.state_clip_z, self.state_clip_z)
+        return normalized.astype(np.float32)
 
     def normalize_action(self, value: np.ndarray) -> np.ndarray:
         value = np.asarray(value, dtype=np.float32)
@@ -109,14 +121,76 @@ class Gr3NormalizationStats:
             + self.action_low[:dim]
         ).astype(np.float32)
 
-    def to_dict(self) -> dict[str, list[float]]:
+    def with_state_robustness(
+        self,
+        *,
+        std_floor: float,
+        clip_z: float | None,
+    ) -> "Gr3NormalizationStats":
+        """Return the same dataset statistics with a robust state transform."""
+
+        return Gr3NormalizationStats(
+            state_mean=self.state_mean,
+            state_std=self.state_std,
+            action_low=self.action_low,
+            action_high=self.action_high,
+            state_std_floor=std_floor,
+            state_clip_z=clip_z,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
         return {
             "state_mean": self.state_mean.tolist(),
             "state_std": self.state_std.tolist(),
             "action_low": self.action_low.tolist(),
             "action_high": self.action_high.tolist(),
+            "state_std_floor": self.state_std_floor,
+            "state_clip_z": self.state_clip_z,
         }
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "Gr3NormalizationStats":
-        return cls(**{name: np.asarray(value[name], dtype=np.float32) for name in cls.__dataclass_fields__})
+        return cls(
+            state_mean=np.asarray(value["state_mean"], dtype=np.float32),
+            state_std=np.asarray(value["state_std"], dtype=np.float32),
+            action_low=np.asarray(value["action_low"], dtype=np.float32),
+            action_high=np.asarray(value["action_high"], dtype=np.float32),
+            state_std_floor=float(value.get("state_std_floor", 0.0)),
+            state_clip_z=(
+                None
+                if value.get("state_clip_z") is None
+                else float(value["state_clip_z"])
+            ),
+        )
+
+
+def gr3_active_hand_action_indices(
+    stats: Gr3NormalizationStats,
+    *,
+    min_range: float = 0.05,
+    model_action_dim: int = GR3_MODEL_ACTION_DIM,
+) -> tuple[int, ...]:
+    """Select hand axes that contain a learnable action range in this dataset."""
+
+    if min_range < 0 or model_action_dim not in {GR3_MODEL_ACTION_DIM, GR3_ACTION_DIM}:
+        raise ValueError("invalid hand range threshold or model action dimension")
+    action_range = stats.action_high - stats.action_low
+    return tuple(
+        index
+        for index in GR3_HAND_ACTION_INDICES
+        if index < model_action_dim and float(action_range[index]) >= min_range
+    )
+
+
+def gr3_left_hand_closed(
+    actions: np.ndarray,
+    *,
+    threshold: float = -0.5,
+) -> np.ndarray:
+    """Classify GR3 left-finger closure from raw joint-space actions."""
+
+    values = np.asarray(actions, dtype=np.float32)
+    if values.shape[-1] <= max(GR3_LEFT_FINGER_ACTION_INDICES):
+        raise ValueError("GR3 action does not contain the left finger axes")
+    aperture = values[..., list(GR3_LEFT_FINGER_ACTION_INDICES)].mean(axis=-1)
+    return aperture < threshold
