@@ -21,6 +21,29 @@ from turbovla.data.gr3_dagger import GR3_PROFILE_ID
 from turbovla.models import TurboVLAConfig, build_turbovla
 
 
+def _load_gr3_checkpoint(path: Path) -> tuple[dict, Path | None]:
+    payload = torch.load(path, map_location="cpu")
+    if isinstance(payload, dict) and "model_state_dict" in payload:
+        return payload, None
+    if not (
+        isinstance(payload, dict)
+        and payload
+        and all(isinstance(key, str) and torch.is_tensor(value) for key, value in payload.items())
+    ):
+        raise ValueError(f"unsupported TurboVLA GR3 checkpoint payload: {path}")
+
+    metadata_path = path.with_name("model_final.pt")
+    if metadata_path == path or not metadata_path.is_file():
+        raise ValueError(
+            "raw TurboVLA GR3 weights require model_final.pt in the same directory"
+        )
+    metadata = torch.load(metadata_path, map_location="cpu")
+    if not isinstance(metadata, dict) or "model_state_dict" not in metadata:
+        raise ValueError(f"invalid TurboVLA GR3 metadata checkpoint: {metadata_path}")
+    metadata["model_state_dict"] = payload
+    return metadata, metadata_path
+
+
 class TurboVLAGr3Policy:
     def __init__(
         self,
@@ -31,7 +54,9 @@ class TurboVLAGr3Policy:
         device: str = "cuda",
     ) -> None:
         self.checkpoint_path = Path(checkpoint).expanduser().resolve()
-        payload = torch.load(self.checkpoint_path, map_location="cpu")
+        payload, self.metadata_checkpoint_path = _load_gr3_checkpoint(
+            self.checkpoint_path
+        )
         if payload.get("profile_id") not in {GR3_PROFILE_ID, GR3_ANYGRASP_PROFILE_ID}:
             raise ValueError("checkpoint is not a TurboVLA GR3 profile")
         config = TurboVLAConfig.from_mapping(payload["model_config"])
